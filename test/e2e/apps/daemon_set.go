@@ -23,7 +23,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -478,7 +478,7 @@ var _ = SIGDescribe("Daemon set [Serial]", func() {
 			rollbackPods[pod.Name] = true
 		}
 		for _, pod := range existingPods {
-			gomega.Expect(rollbackPods[pod.Name]).To(gomega.BeTrue(), fmt.Sprintf("unexpected pod %s be restarted", pod.Name))
+			framework.ExpectEqual(rollbackPods[pod.Name], true, fmt.Sprintf("unexpected pod %s be restarted", pod.Name))
 		}
 	})
 })
@@ -688,12 +688,13 @@ func canScheduleOnNode(node v1.Node, ds *appsv1.DaemonSet) bool {
 	newPod := daemon.NewPod(ds, node.Name)
 	nodeInfo := schedulernodeinfo.NewNodeInfo()
 	nodeInfo.SetNode(&node)
-	fit, _, err := daemon.Predicates(newPod, nodeInfo)
+	taints, err := nodeInfo.Taints()
 	if err != nil {
 		framework.Failf("Can't test DaemonSet predicates for node %s: %v", node.Name, err)
 		return false
 	}
-	return fit
+	fitsNodeName, fitsNodeAffinity, fitsTaints := daemon.Predicates(newPod, &node, taints)
+	return fitsNodeName && fitsNodeAffinity && fitsTaints
 }
 
 func checkRunningOnNoNodes(f *framework.Framework, ds *appsv1.DaemonSet) func() (bool, error) {

@@ -35,6 +35,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
@@ -148,7 +149,7 @@ func (s *subPathTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 		}
 
 		subPath := f.Namespace.Name
-		l.pod = SubpathTestPod(f, subPath, l.resource.VolType, l.resource.VolSource, true)
+		l.pod = SubpathTestPod(f, subPath, string(volType), l.resource.VolSource, true)
 		l.pod.Spec.NodeName = l.config.ClientNodeName
 		l.pod.Spec.NodeSelector = l.config.ClientNodeSelector
 
@@ -185,6 +186,8 @@ func (s *subPathTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 
 		validateMigrationVolumeOpCounts(f.ClientSet, driver.GetDriverInfo().InTreePluginName, l.intreeOps, l.migratedOps)
 	}
+
+	driverName := driver.GetDriverInfo().Name
 
 	ginkgo.It("should support non-existent path", func() {
 		init()
@@ -348,9 +351,9 @@ func (s *subPathTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 		init()
 		defer cleanup()
 
-		if strings.HasPrefix(l.resource.VolType, "hostPath") || strings.HasPrefix(l.resource.VolType, "csi-hostpath") {
+		if strings.HasPrefix(driverName, "hostPath") {
 			// TODO: This skip should be removed once #61446 is fixed
-			framework.Skipf("%s volume type does not support reconstruction, skipping", l.resource.VolType)
+			e2eskipper.Skipf("Driver %s does not support reconstruction, skipping", driverName)
 		}
 
 		testSubpathReconstruction(f, l.hostExec, l.pod, true)
@@ -390,7 +393,7 @@ func (s *subPathTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 		init()
 		defer cleanup()
 		if l.roVolSource == nil {
-			framework.Skipf("Volume type %v doesn't support readOnly source", l.resource.VolType)
+			e2eskipper.Skipf("Driver %s on volume type %s doesn't support readOnly source", driverName, pattern.VolType)
 		}
 
 		origpod := l.pod.DeepCopy()
@@ -418,7 +421,7 @@ func (s *subPathTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 		init()
 		defer cleanup()
 		if l.roVolSource == nil {
-			framework.Skipf("Volume type %v doesn't support readOnly source", l.resource.VolType)
+			e2eskipper.Skipf("Driver %s on volume type %s doesn't support readOnly source", driverName, pattern.VolType)
 		}
 
 		// Format the volume while it's writable
@@ -757,7 +760,7 @@ func waitForPodSubpathError(f *framework.Framework, pod *v1.Pod, allowContainerT
 		return fmt.Errorf("failed to find container that uses subpath")
 	}
 
-	return wait.PollImmediate(framework.Poll, framework.PodStartTimeout, func() (bool, error) {
+	waitErr := wait.PollImmediate(framework.Poll, framework.PodStartTimeout, func() (bool, error) {
 		pod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(pod.Name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -784,6 +787,10 @@ func waitForPodSubpathError(f *framework.Framework, pod *v1.Pod, allowContainerT
 		}
 		return false, nil
 	})
+	if waitErr != nil {
+		return fmt.Errorf("error waiting for pod subpath error to occur: %v", waitErr)
+	}
+	return nil
 }
 
 // Tests that the existing subpath mount is detected when a container restarts

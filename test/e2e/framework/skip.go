@@ -14,12 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// This file will be removed after switching to use subpackage skipper.
+
 package framework
 
 import (
 	"fmt"
 
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
@@ -65,7 +67,7 @@ func SkipIfMissingResource(dynamicClient dynamic.Interface, gvr schema.GroupVers
 	_, err := resourceClient.List(metav1.ListOptions{})
 	if err != nil {
 		// not all resources support list, so we ignore those
-		if apierrs.IsMethodNotSupported(err) || apierrs.IsNotFound(err) || apierrs.IsForbidden(err) {
+		if apierrors.IsMethodNotSupported(err) || apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
 			skipInternalf(1, "Could not find %s resource, skipping test: %#v", gvr, err)
 		}
 		Failf("Unexpected error getting %v: %v", gvr, err)
@@ -161,10 +163,7 @@ func SkipUnlessSSHKeyPresent() {
 	}
 }
 
-// serverVersionGTE returns true if v is greater than or equal to the server
-// version.
-//
-// TODO(18726): This should be incorporated into client.VersionInterface.
+// serverVersionGTE returns true if v is greater than or equal to the server version.
 func serverVersionGTE(v *utilversion.Version, c discovery.ServerVersionInterface) (bool, error) {
 	serverVersion, err := c.ServerVersion()
 	if err != nil {

@@ -19,10 +19,10 @@ limitations under the License.
 package azure
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -38,85 +38,10 @@ import (
 	"k8s.io/client-go/tools/record"
 	servicehelpers "k8s.io/cloud-provider/service/helpers"
 	"k8s.io/legacy-cloud-providers/azure/auth"
+	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
 var testClusterName = "testCluster"
-
-func TestParseConfig(t *testing.T) {
-	azureConfig := `{
-		"aadClientCertPassword": "aadClientCertPassword",
-		"aadClientCertPath": "aadClientCertPath",
-		"aadClientId": "aadClientId",
-		"aadClientSecret": "aadClientSecret",
-		"cloud":"AzurePublicCloud",
-		"cloudProviderBackoff": true,
-		"cloudProviderBackoffDuration": 1,
-		"cloudProviderBackoffExponent": 1,
-		"cloudProviderBackoffJitter": 1,
-		"cloudProviderBackoffRetries": 1,
-		"cloudProviderRatelimit": true,
-		"cloudProviderRateLimitBucket": 1,
-		"CloudProviderRateLimitBucketWrite": 1,
-		"cloudProviderRateLimitQPS": 1,
-		"CloudProviderRateLimitQPSWrite": 1,
-		"location": "location",
-		"maximumLoadBalancerRuleCount": 1,
-		"primaryAvailabilitySetName": "primaryAvailabilitySetName",
-		"primaryScaleSetName": "primaryScaleSetName",
-		"resourceGroup": "resourceGroup",
-		"routeTableName": "routeTableName",
-		"routeTableResourceGroup": "routeTableResourceGroup",
-		"securityGroupName": "securityGroupName",
-		"subnetName": "subnetName",
-		"subscriptionId": "subscriptionId",
-		"tenantId": "tenantId",
-		"useInstanceMetadata": true,
-		"useManagedIdentityExtension": true,
-		"vnetName": "vnetName",
-		"vnetResourceGroup": "vnetResourceGroup",
-		vmType: "standard"
-	}`
-	expected := &Config{
-		AzureAuthConfig: auth.AzureAuthConfig{
-			AADClientCertPassword:       "aadClientCertPassword",
-			AADClientCertPath:           "aadClientCertPath",
-			AADClientID:                 "aadClientId",
-			AADClientSecret:             "aadClientSecret",
-			Cloud:                       "AzurePublicCloud",
-			SubscriptionID:              "subscriptionId",
-			TenantID:                    "tenantId",
-			UseManagedIdentityExtension: true,
-		},
-		CloudProviderBackoff:              true,
-		CloudProviderBackoffDuration:      1,
-		CloudProviderBackoffExponent:      1,
-		CloudProviderBackoffJitter:        1,
-		CloudProviderBackoffRetries:       1,
-		CloudProviderRateLimit:            true,
-		CloudProviderRateLimitBucket:      1,
-		CloudProviderRateLimitBucketWrite: 1,
-		CloudProviderRateLimitQPS:         1,
-		CloudProviderRateLimitQPSWrite:    1,
-		Location:                          "location",
-		MaximumLoadBalancerRuleCount:      1,
-		PrimaryAvailabilitySetName:        "primaryAvailabilitySetName",
-		PrimaryScaleSetName:               "primaryScaleSetName",
-		ResourceGroup:                     "resourcegroup",
-		RouteTableName:                    "routeTableName",
-		RouteTableResourceGroup:           "routeTableResourceGroup",
-		SecurityGroupName:                 "securityGroupName",
-		SubnetName:                        "subnetName",
-		UseInstanceMetadata:               true,
-		VMType:                            "standard",
-		VnetName:                          "vnetName",
-		VnetResourceGroup:                 "vnetResourceGroup",
-	}
-
-	buffer := bytes.NewBufferString(azureConfig)
-	config, err := parseConfig(buffer)
-	assert.NoError(t, err)
-	assert.Equal(t, expected, config)
-}
 
 // Test flipServiceInternalAnnotation
 func TestFlipServiceInternalAnnotation(t *testing.T) {
@@ -872,7 +797,11 @@ func TestReconcileSecurityGroupEtagMismatch(t *testing.T) {
 	newSG, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, true /* wantLb */)
 	assert.Nil(t, newSG)
 	assert.NotNil(t, err)
-	assert.Equal(t, err, errPreconditionFailedEtagMismatch)
+	expectedError := &retry.Error{
+		HTTPStatusCode: http.StatusPreconditionFailed,
+		RawError:       errPreconditionFailedEtagMismatch,
+	}
+	assert.Equal(t, err, expectedError.Error())
 }
 
 func TestReconcilePublicIPWithNewService(t *testing.T) {
@@ -964,6 +893,7 @@ func getTestCloud() (az *Cloud) {
 			ResourceGroup:                "rg",
 			VnetResourceGroup:            "rg",
 			RouteTableResourceGroup:      "rg",
+			SecurityGroupResourceGroup:   "rg",
 			Location:                     "westus",
 			VnetName:                     "vnet",
 			SubnetName:                   "subnet",
@@ -1220,7 +1150,7 @@ func getTestSecurityGroup(az *Cloud, services ...v1.Service) *network.SecurityGr
 	defer cancel()
 	az.SecurityGroupsClient.CreateOrUpdate(
 		ctx,
-		az.ResourceGroup,
+		az.SecurityGroupResourceGroup,
 		az.SecurityGroupName,
 		sg,
 		"")
@@ -1238,14 +1168,14 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 		if len(svc.Spec.Ports) > 0 {
 			expectedFrontendIPCount++
 			expectedFrontendIP := ExpectedFrontendIPInfo{
-				Name:   az.getFrontendIPConfigName(&svc, subnet(&svc)),
+				Name:   az.getFrontendIPConfigName(&svc),
 				Subnet: subnet(&svc),
 			}
 			expectedFrontendIPs = append(expectedFrontendIPs, expectedFrontendIP)
 		}
 		for _, wantedRule := range svc.Spec.Ports {
 			expectedRuleCount++
-			wantedRuleName := az.getLoadBalancerRuleName(&svc, wantedRule.Protocol, wantedRule.Port, subnet(&svc))
+			wantedRuleName := az.getLoadBalancerRuleName(&svc, wantedRule.Protocol, wantedRule.Port)
 			foundRule := false
 			for _, actualRule := range *loadBalancer.LoadBalancingRules {
 				if strings.EqualFold(*actualRule.Name, wantedRuleName) &&
@@ -1563,6 +1493,7 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"aadClientCertPassword": "--aad-client-cert-password--",
 		"resourceGroup": "--resource-group--",
 		"routeTableResourceGroup": "--route-table-resource-group--",
+		"securityGroupResourceGroup": "--security-group-resource-group--",
 		"location": "--location--",
 		"subnetName": "--subnet-name--",
 		"securityGroupName": "--security-group-name--",
@@ -1572,7 +1503,14 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"cloudProviderBackoff": true,
 		"cloudProviderRatelimit": true,
 		"cloudProviderRateLimitQPS": 0.5,
-		"cloudProviderRateLimitBucket": 5
+		"cloudProviderRateLimitBucket": 5,
+		"availabilitySetNodesCacheTTLInSeconds": 100,
+		"vmssCacheTTLInSeconds": 100,
+		"vmssVirtualMachinesCacheTTLInSeconds": 100,
+		"vmCacheTTLInSeconds": 100,
+		"loadBalancerCacheTTLInSeconds": 100,
+		"nsgCacheTTLInSeconds": 100,
+		"routeTableCacheTTLInSeconds": 100,
 	}`
 	validateConfig(t, config)
 }
@@ -1608,6 +1546,7 @@ aadClientCertPath: --aad-client-cert-path--
 aadClientCertPassword: --aad-client-cert-password--
 resourceGroup: --resource-group--
 routeTableResourceGroup: --route-table-resource-group--
+securityGroupResourceGroup: --security-group-resource-group--
 location: --location--
 subnetName: --subnet-name--
 securityGroupName: --security-group-name--
@@ -1622,6 +1561,13 @@ cloudProviderBackoffJitter: 1.0
 cloudProviderRatelimit: true
 cloudProviderRateLimitQPS: 0.5
 cloudProviderRateLimitBucket: 5
+availabilitySetNodesCacheTTLInSeconds: 100
+vmssCacheTTLInSeconds: 100
+vmssVirtualMachinesCacheTTLInSeconds: 100
+vmCacheTTLInSeconds: 100
+loadBalancerCacheTTLInSeconds: 100
+nsgCacheTTLInSeconds: 100
+routeTableCacheTTLInSeconds: 100
 `
 	validateConfig(t, config)
 }
@@ -1652,6 +1598,9 @@ func validateConfig(t *testing.T, config string) {
 	}
 	if azureCloud.RouteTableResourceGroup != "--route-table-resource-group--" {
 		t.Errorf("got incorrect value for RouteTableResourceGroup")
+	}
+	if azureCloud.SecurityGroupResourceGroup != "--security-group-resource-group--" {
+		t.Errorf("got incorrect value for SecurityGroupResourceGroup")
 	}
 	if azureCloud.Location != "--location--" {
 		t.Errorf("got incorrect value for Location")
@@ -1694,6 +1643,27 @@ func validateConfig(t *testing.T, config string) {
 	}
 	if azureCloud.CloudProviderRateLimitBucket != 5 {
 		t.Errorf("got incorrect value for CloudProviderRateLimitBucket")
+	}
+	if azureCloud.AvailabilitySetNodesCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for availabilitySetNodesCacheTTLInSeconds")
+	}
+	if azureCloud.VmssCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for vmssCacheTTLInSeconds")
+	}
+	if azureCloud.VmssVirtualMachinesCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for vmssVirtualMachinesCacheTTLInSeconds")
+	}
+	if azureCloud.VMCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for vmCacheTTLInSeconds")
+	}
+	if azureCloud.LoadBalancerCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for loadBalancerCacheTTLInSeconds")
+	}
+	if azureCloud.NsgCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for nsgCacheTTLInSeconds")
+	}
+	if azureCloud.RouteTableCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for routeTableCacheTTLInSeconds")
 	}
 }
 
@@ -1789,7 +1759,7 @@ func addTestSubnet(t *testing.T, az *Cloud, svc *v1.Service) {
 
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
-	_, err := az.SubnetsClient.CreateOrUpdate(ctx, az.VnetResourceGroup, az.VnetName, subName,
+	err := az.SubnetsClient.CreateOrUpdate(ctx, az.VnetResourceGroup, az.VnetName, subName,
 		network.Subnet{
 			ID:   &subnetID,
 			Name: &subName,

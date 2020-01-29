@@ -18,13 +18,12 @@ package storage
 
 import (
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 
 	"fmt"
 	"time"
 
 	"k8s.io/api/core/v1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/pkg/util/slice"
@@ -42,7 +41,7 @@ func waitForPersistentVolumeClaimDeleted(c clientset.Interface, ns string, pvcNa
 	for start := time.Now(); time.Since(start) < timeout; time.Sleep(Poll) {
 		_, err := c.CoreV1().PersistentVolumeClaims(ns).Get(pvcName, metav1.GetOptions{})
 		if err != nil {
-			if apierrs.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				framework.Logf("Claim %q in namespace %q doesn't exist in the system", pvcName, ns)
 				return nil
 			}
@@ -95,7 +94,7 @@ var _ = utils.SIGDescribe("PVC Protection", func() {
 		ginkgo.By("Checking that PVC Protection finalizer is set")
 		pvc, err = client.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(pvc.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, "While getting PVC status")
-		gomega.Expect(slice.ContainsString(pvc.ObjectMeta.Finalizers, volumeutil.PVCProtectionFinalizer, nil)).To(gomega.BeTrue(), "PVC Protection finalizer(%v) is not set in %v", volumeutil.PVCProtectionFinalizer, pvc.ObjectMeta.Finalizers)
+		framework.ExpectEqual(slice.ContainsString(pvc.ObjectMeta.Finalizers, volumeutil.PVCProtectionFinalizer, nil), true, "PVC Protection finalizer(%v) is not set in %v", volumeutil.PVCProtectionFinalizer, pvc.ObjectMeta.Finalizers)
 	})
 
 	ginkgo.AfterEach(func() {

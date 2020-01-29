@@ -23,6 +23,7 @@ package testsuites
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/onsi/ginkgo"
 
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -89,14 +91,14 @@ func (t *volumesTestSuite) SkipRedundantSuite(driver TestDriver, pattern testpat
 func skipExecTest(driver TestDriver) {
 	dInfo := driver.GetDriverInfo()
 	if !dInfo.Capabilities[CapExec] {
-		framework.Skipf("Driver %q does not support exec - skipping", dInfo.Name)
+		e2eskipper.Skipf("Driver %q does not support exec - skipping", dInfo.Name)
 	}
 }
 
 func skipTestIfBlockNotSupported(driver TestDriver) {
 	dInfo := driver.GetDriverInfo()
 	if !dInfo.Capabilities[CapBlock] {
-		framework.Skipf("Driver %q does not provide raw block - skipping", dInfo.Name)
+		e2eskipper.Skipf("Driver %q does not provide raw block - skipping", dInfo.Name)
 	}
 }
 
@@ -130,7 +132,7 @@ func (t *volumesTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 		testVolumeSizeRange := t.GetTestSuiteInfo().SupportedSizeRange
 		l.resource = CreateVolumeResource(driver, l.config, pattern, testVolumeSizeRange)
 		if l.resource.VolSource == nil {
-			framework.Skipf("Driver %q does not define volumeSource - skipping", dInfo.Name)
+			e2eskipper.Skipf("Driver %q does not define volumeSource - skipping", dInfo.Name)
 		}
 	}
 
@@ -193,7 +195,7 @@ func (t *volumesTestSuite) DefineTests(driver TestDriver, pattern testpatterns.T
 			init()
 			defer cleanup()
 
-			testScriptInPod(f, l.resource.VolType, l.resource.VolSource, l.config)
+			testScriptInPod(f, string(pattern.VolType), l.resource.VolSource, l.config)
 		})
 	}
 }
@@ -216,7 +218,7 @@ func testScriptInPod(
 	} else {
 		content = fmt.Sprintf("ls %s", volPath)
 	}
-	command := volume.GenerateWriteandExecuteScriptFileCmd(content, fileName, volPath)
+	command := generateWriteandExecuteScriptFileCmd(content, fileName, volPath)
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("exec-volume-test-%s", suffix),
@@ -253,4 +255,23 @@ func testScriptInPod(
 	ginkgo.By(fmt.Sprintf("Deleting pod %s", pod.Name))
 	err := e2epod.DeletePodWithWait(f.ClientSet, pod)
 	framework.ExpectNoError(err, "while deleting pod")
+}
+
+// generateWriteandExecuteScriptFileCmd generates the corresponding command lines to write a file with the given file path
+// and also execute this file.
+// Depending on the Node OS is Windows or linux, the command will use powershell or /bin/sh
+func generateWriteandExecuteScriptFileCmd(content, fileName, filePath string) []string {
+	// for windows cluster, modify the Pod spec.
+	if framework.NodeOSDistroIs("windows") {
+		scriptName := fmt.Sprintf("%s.ps1", fileName)
+		fullPath := filepath.Join(filePath, scriptName)
+
+		cmd := "echo \"" + content + "\" > " + fullPath + "; .\\" + fullPath
+		framework.Logf("generated pod command %s", cmd)
+		return []string{"powershell", "/c", cmd}
+	}
+	scriptName := fmt.Sprintf("%s.sh", fileName)
+	fullPath := filepath.Join(filePath, scriptName)
+	cmd := fmt.Sprintf("echo \"%s\" > %s; chmod u+x %s; %s;", content, fullPath, fullPath, fullPath)
+	return []string{"/bin/sh", "-ec", cmd}
 }

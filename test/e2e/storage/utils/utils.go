@@ -30,7 +30,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -73,11 +73,11 @@ func PodExec(f *framework.Framework, pod *v1.Pod, shExec string) (string, error)
 func VerifyExecInPodSucceed(f *framework.Framework, pod *v1.Pod, shExec string) {
 	_, err := PodExec(f, pod, shExec)
 	if err != nil {
-		if err, ok := err.(uexec.CodeExitError); ok {
-			exitCode := err.ExitStatus()
+		if exiterr, ok := err.(uexec.CodeExitError); ok {
+			exitCode := exiterr.ExitStatus()
 			framework.ExpectNoError(err,
 				"%q should succeed, but failed with exit code %d and error message %q",
-				shExec, exitCode, err)
+				shExec, exitCode, exiterr)
 		} else {
 			framework.ExpectNoError(err,
 				"%q should succeed, but failed with error message %q",
@@ -90,11 +90,11 @@ func VerifyExecInPodSucceed(f *framework.Framework, pod *v1.Pod, shExec string) 
 func VerifyExecInPodFail(f *framework.Framework, pod *v1.Pod, shExec string, exitCode int) {
 	_, err := PodExec(f, pod, shExec)
 	if err != nil {
-		if err, ok := err.(clientexec.ExitError); ok {
-			actualExitCode := err.ExitStatus()
+		if exiterr, ok := err.(clientexec.ExitError); ok {
+			actualExitCode := exiterr.ExitStatus()
 			framework.ExpectEqual(actualExitCode, exitCode,
 				"%q should fail with exit code %d, but failed with exit code %d and error message %q",
-				shExec, exitCode, actualExitCode, err)
+				shExec, exitCode, actualExitCode, exiterr)
 		} else {
 			framework.ExpectNoError(err,
 				"%q should fail with exit code %d, but failed with error message %q",
@@ -279,14 +279,14 @@ func TestVolumeUnmountsFromDeletedPodWithForceOption(c clientset.Interface, f *f
 	result, err := e2essh.SSH(fmt.Sprintf("mount | grep %s | grep -v volume-subpaths", clientPod.UID), nodeIP, framework.TestContext.Provider)
 	e2essh.LogResult(result)
 	framework.ExpectNoError(err, "Encountered SSH error.")
-	gomega.Expect(result.Code).To(gomega.BeZero(), fmt.Sprintf("Expected grep exit code of 0, got %d", result.Code))
+	framework.ExpectEqual(result.Code, 0, fmt.Sprintf("Expected grep exit code of 0, got %d", result.Code))
 
 	if checkSubpath {
 		ginkgo.By("Expecting the volume subpath mount to be found.")
 		result, err := e2essh.SSH(fmt.Sprintf("cat /proc/self/mountinfo | grep %s | grep volume-subpaths", clientPod.UID), nodeIP, framework.TestContext.Provider)
 		e2essh.LogResult(result)
 		framework.ExpectNoError(err, "Encountered SSH error.")
-		gomega.Expect(result.Code).To(gomega.BeZero(), fmt.Sprintf("Expected grep exit code of 0, got %d", result.Code))
+		framework.ExpectEqual(result.Code, 0, fmt.Sprintf("Expected grep exit code of 0, got %d", result.Code))
 	}
 
 	// This command is to make sure kubelet is started after test finishes no matter it fails or not.
@@ -581,9 +581,9 @@ func PrivilegedTestPSPClusterRoleBinding(client clientset.Interface,
 		roleBindingClient.Delete(binding.GetName(), &metav1.DeleteOptions{})
 		err := wait.Poll(2*time.Second, 2*time.Minute, func() (bool, error) {
 			_, err := roleBindingClient.Get(binding.GetName(), metav1.GetOptions{})
-			return apierrs.IsNotFound(err), nil
+			return apierrors.IsNotFound(err), nil
 		})
-		framework.ExpectNoError(err, "Timed out waiting for deletion: %v", err)
+		framework.ExpectNoError(err, "Timed out waiting for RBAC binding %s deletion: %v", binding.GetName(), err)
 
 		if teardown {
 			continue
@@ -644,7 +644,7 @@ func genBinDataFromSeed(len int, seed int64) []byte {
 	binData := make([]byte, len)
 	rand.Seed(seed)
 
-	len, err := rand.Read(binData)
+	_, err := rand.Read(binData)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 	}

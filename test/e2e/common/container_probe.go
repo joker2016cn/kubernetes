@@ -29,7 +29,9 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eevents "k8s.io/kubernetes/test/e2e/framework/events"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	testutils "k8s.io/kubernetes/test/utils"
 
 	"github.com/onsi/ginkgo"
@@ -82,7 +84,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		}
 
 		restartCount := getRestartCount(p)
-		gomega.Expect(restartCount == 0).To(gomega.BeTrue(), "pod should have a restart count of 0 but got %v", restartCount)
+		framework.ExpectEqual(restartCount, 0, "pod should have a restart count of 0 but got %v", restartCount)
 	})
 
 	/*
@@ -108,7 +110,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 		framework.ExpectNotEqual(isReady, true, "pod should be not ready")
 
 		restartCount := getRestartCount(p)
-		gomega.Expect(restartCount == 0).To(gomega.BeTrue(), "pod should have a restart count of 0 but got %v", restartCount)
+		framework.ExpectEqual(restartCount, 0, "pod should have a restart count of 0 but got %v", restartCount)
 	})
 
 	/*
@@ -159,11 +161,11 @@ var _ = framework.KubeDescribe("Probing container", func() {
 	})
 
 	/*
-		Release : v1.15
+		Release : v1.18
 		Testname: Pod liveness probe, using tcp socket, no restart
-		Description: A Pod is created with liveness probe on tcp socket 8080. The http handler on port 8080 will return http errors after 10 seconds, but socket will remain open. Liveness probe MUST not fail to check health and the restart count should remain 0.
+		Description: A Pod is created with liveness probe on tcp socket 8080. The http handler on port 8080 will return http errors after 10 seconds, but the socket will remain open. Liveness probe MUST not fail to check health and the restart count should remain 0.
 	*/
-	ginkgo.It("should *not* be restarted with a tcp:8080 liveness probe [NodeConformance]", func() {
+	framework.ConformanceIt("should *not* be restarted with a tcp:8080 liveness probe [NodeConformance]", func() {
 		livenessProbe := &v1.Probe{
 			Handler:             tcpSocketHandler(8080),
 			InitialDelaySeconds: 15,
@@ -211,7 +213,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 	*/
 	ginkgo.It("should be restarted with a docker exec liveness probe with timeout ", func() {
 		// TODO: enable this test once the default exec handler supports timeout.
-		framework.Skipf("The default exec handler, dockertools.NativeExecHandler, does not support timeouts due to a limitation in the Docker Remote API")
+		e2eskipper.Skipf("The default exec handler, dockertools.NativeExecHandler, does not support timeouts due to a limitation in the Docker Remote API")
 		cmd := []string{"/bin/sh", "-c", "sleep 600"}
 		livenessProbe := &v1.Probe{
 			Handler:             execHandler([]string{"/bin/sh", "-c", "sleep 10"}),
@@ -258,7 +260,7 @@ var _ = framework.KubeDescribe("Probing container", func() {
 			"involvedObject.namespace": f.Namespace.Name,
 			"reason":                   events.ContainerProbeWarning,
 		}.AsSelector().String()
-		framework.ExpectNoError(WaitTimeoutForEvent(
+		framework.ExpectNoError(e2eevents.WaitTimeoutForEvent(
 			f.ClientSet, f.Namespace.Name, expectedEvent, "0.0.0.0", framework.PodEventTimeout))
 	})
 })

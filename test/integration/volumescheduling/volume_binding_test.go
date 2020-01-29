@@ -40,7 +40,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/kubernetes/pkg/controller/volume/persistentvolume"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -425,10 +425,10 @@ func testVolumeBindingStress(t *testing.T, schedulerResyncPeriod time.Duration, 
 
 	// Set max volume limit to the number of PVCs the test will create
 	// TODO: remove when max volume limit allows setting through storageclass
-	if err := os.Setenv(predicates.KubeMaxPDVols, fmt.Sprintf("%v", podLimit*volsPerPod)); err != nil {
+	if err := os.Setenv(nodevolumelimits.KubeMaxPDVols, fmt.Sprintf("%v", podLimit*volsPerPod)); err != nil {
 		t.Fatalf("failed to set max pd limit: %v", err)
 	}
-	defer os.Unsetenv(predicates.KubeMaxPDVols)
+	defer os.Unsetenv(nodevolumelimits.KubeMaxPDVols)
 
 	scName := &classWait
 	if dynamic {
@@ -840,19 +840,19 @@ func TestRescheduleProvisioning(t *testing.T) {
 	// Set feature gates
 	controllerCh := make(chan struct{})
 
-	context := initTestMaster(t, "reschedule-volume-provision", nil)
+	testCtx := initTestMaster(t, "reschedule-volume-provision", nil)
 
-	clientset := context.clientSet
-	ns := context.ns.Name
+	clientset := testCtx.clientSet
+	ns := testCtx.ns.Name
 
 	defer func() {
 		close(controllerCh)
 		deleteTestObjects(clientset, ns, nil)
-		context.clientSet.CoreV1().Nodes().DeleteCollection(nil, metav1.ListOptions{})
-		context.closeFn()
+		testCtx.clientSet.CoreV1().Nodes().DeleteCollection(nil, metav1.ListOptions{})
+		testCtx.closeFn()
 	}()
 
-	ctrl, informerFactory, err := initPVController(t, context, 0)
+	ctrl, informerFactory, err := initPVController(t, testCtx, 0)
 	if err != nil {
 		t.Fatalf("Failed to create PV controller: %v", err)
 	}
@@ -896,18 +896,18 @@ func TestRescheduleProvisioning(t *testing.T) {
 }
 
 func setupCluster(t *testing.T, nsName string, numberOfNodes int, resyncPeriod time.Duration, provisionDelaySeconds int) *testConfig {
-	context := initTestSchedulerWithOptions(t, initTestMaster(t, nsName, nil), resyncPeriod)
-	clientset := context.clientSet
-	ns := context.ns.Name
+	textCtx := initTestSchedulerWithOptions(t, initTestMaster(t, nsName, nil), resyncPeriod)
+	clientset := textCtx.clientSet
+	ns := textCtx.ns.Name
 
-	ctrl, informerFactory, err := initPVController(t, context, provisionDelaySeconds)
+	ctrl, informerFactory, err := initPVController(t, textCtx, provisionDelaySeconds)
 	if err != nil {
 		t.Fatalf("Failed to create PV controller: %v", err)
 	}
-	go ctrl.Run(context.ctx.Done())
+	go ctrl.Run(textCtx.ctx.Done())
 	// Start informer factory after all controllers are configured and running.
-	informerFactory.Start(context.ctx.Done())
-	informerFactory.WaitForCacheSync(context.ctx.Done())
+	informerFactory.Start(textCtx.ctx.Done())
+	informerFactory.WaitForCacheSync(textCtx.ctx.Done())
 
 	// Create shared objects
 	// Create nodes
@@ -928,17 +928,17 @@ func setupCluster(t *testing.T, nsName string, numberOfNodes int, resyncPeriod t
 	return &testConfig{
 		client: clientset,
 		ns:     ns,
-		stop:   context.ctx.Done(),
+		stop:   textCtx.ctx.Done(),
 		teardown: func() {
 			klog.Infof("test cluster %q start to tear down", ns)
 			deleteTestObjects(clientset, ns, nil)
-			cleanupTest(t, context)
+			cleanupTest(t, textCtx)
 		},
 	}
 }
 
-func initPVController(t *testing.T, context *testContext, provisionDelaySeconds int) (*persistentvolume.PersistentVolumeController, informers.SharedInformerFactory, error) {
-	clientset := context.clientSet
+func initPVController(t *testing.T, testCtx *testContext, provisionDelaySeconds int) (*persistentvolume.PersistentVolumeController, informers.SharedInformerFactory, error) {
+	clientset := testCtx.clientSet
 	// Informers factory for controllers
 	informerFactory := informers.NewSharedInformerFactory(clientset, 0)
 

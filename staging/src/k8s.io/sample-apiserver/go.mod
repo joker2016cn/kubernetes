@@ -2,7 +2,7 @@
 
 module k8s.io/sample-apiserver
 
-go 1.12
+go 1.13
 
 require (
 	github.com/go-openapi/spec v0.19.3
@@ -14,7 +14,7 @@ require (
 	k8s.io/code-generator v0.0.0
 	k8s.io/component-base v0.0.0
 	k8s.io/klog v1.0.0
-	k8s.io/kube-openapi v0.0.0-20191107075043-30be4d16710a
+	k8s.io/kube-openapi v0.0.0-20200121204235-bf4fb3bd569c
 )
 
 replace (

@@ -18,6 +18,7 @@ package scheduling
 
 import (
 	"fmt"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -27,12 +28,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eevents "k8s.io/kubernetes/test/e2e/framework/events"
 	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	k8utilnet "k8s.io/utils/net"
@@ -109,7 +111,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 
 		for _, node := range nodeList.Items {
 			framework.Logf("\nLogging pods the kubelet thinks is on node %v before test", node.Name)
-			e2ekubelet.PrintAllKubeletPods(cs, node.Name)
+			printAllKubeletPods(cs, node.Name)
 		}
 
 	})
@@ -119,7 +121,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 	// It is so because we need to have precise control on what's running in the cluster.
 	ginkgo.It("validates local ephemeral storage resource limits of pods that are allowed to run [Feature:LocalStorageCapacityIsolation]", func() {
 
-		framework.SkipUnlessServerVersionGTE(localStorageVersion, f.ClientSet.Discovery())
+		e2eskipper.SkipUnlessServerVersionGTE(localStorageVersion, f.ClientSet.Discovery())
 
 		nodeMaxAllocatable := int64(0)
 
@@ -598,6 +600,22 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 	})
 })
 
+// printAllKubeletPods outputs status of all kubelet pods into log.
+func printAllKubeletPods(c clientset.Interface, nodeName string) {
+	podList, err := e2ekubelet.GetKubeletPods(c, nodeName)
+	if err != nil {
+		framework.Logf("Unable to retrieve kubelet pods for node %v: %v", nodeName, err)
+		return
+	}
+	for _, p := range podList.Items {
+		framework.Logf("%v from %v started at %v (%d container statuses recorded)", p.Name, p.Namespace, p.Status.StartTime, len(p.Status.ContainerStatuses))
+		for _, c := range p.Status.ContainerStatuses {
+			framework.Logf("\tContainer %v ready: %v, restart count %v",
+				c.Name, c.Ready, c.RestartCount)
+		}
+	}
+}
+
 func initPausePod(f *framework.Framework, conf pausePodConfig) *v1.Pod {
 	var gracePeriod = int64(1)
 	pod := &v1.Pod{
@@ -683,7 +701,7 @@ func getRequestedStorageEphemeralStorage(pod v1.Pod) int64 {
 
 // removeTaintFromNodeAction returns a closure that removes the given taint
 // from the given node upon invocation.
-func removeTaintFromNodeAction(cs clientset.Interface, nodeName string, testTaint v1.Taint) common.Action {
+func removeTaintFromNodeAction(cs clientset.Interface, nodeName string, testTaint v1.Taint) e2eevents.Action {
 	return func() error {
 		framework.RemoveTaintOffNode(cs, nodeName, testTaint)
 		return nil
@@ -691,7 +709,7 @@ func removeTaintFromNodeAction(cs clientset.Interface, nodeName string, testTain
 }
 
 // createPausePodAction returns a closure that creates a pause pod upon invocation.
-func createPausePodAction(f *framework.Framework, conf pausePodConfig) common.Action {
+func createPausePodAction(f *framework.Framework, conf pausePodConfig) e2eevents.Action {
 	return func() error {
 		_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(initPausePod(f, conf))
 		return err
@@ -700,12 +718,12 @@ func createPausePodAction(f *framework.Framework, conf pausePodConfig) common.Ac
 
 // WaitForSchedulerAfterAction performs the provided action and then waits for
 // scheduler to act on the given pod.
-func WaitForSchedulerAfterAction(f *framework.Framework, action common.Action, ns, podName string, expectSuccess bool) {
+func WaitForSchedulerAfterAction(f *framework.Framework, action e2eevents.Action, ns, podName string, expectSuccess bool) {
 	predicate := scheduleFailureEvent(podName)
 	if expectSuccess {
 		predicate = scheduleSuccessEvent(ns, podName, "" /* any node */)
 	}
-	success, err := common.ObserveEventAfterAction(f, predicate, action)
+	success, err := e2eevents.ObserveEventAfterAction(f.ClientSet, f.Namespace.Name, predicate, action)
 	framework.ExpectNoError(err)
 	framework.ExpectEqual(success, true)
 }
@@ -714,7 +732,7 @@ func WaitForSchedulerAfterAction(f *framework.Framework, action common.Action, n
 func verifyResult(c clientset.Interface, expectedScheduled int, expectedNotScheduled int, ns string) {
 	allPods, err := c.CoreV1().Pods(ns).List(metav1.ListOptions{})
 	framework.ExpectNoError(err)
-	scheduledPods, notScheduledPods := e2epod.GetPodsScheduled(masterNodes, allPods)
+	scheduledPods, notScheduledPods := GetPodsScheduled(masterNodes, allPods)
 
 	framework.ExpectEqual(len(notScheduledPods), expectedNotScheduled, fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods))
 	framework.ExpectEqual(len(scheduledPods), expectedScheduled, fmt.Sprintf("Scheduled Pods: %#v", scheduledPods))
@@ -800,4 +818,27 @@ func translateIPv4ToIPv6(ip string) string {
 		ip = "0::ffff:" + ip
 	}
 	return ip
+}
+
+// GetPodsScheduled returns a number of currently scheduled and not scheduled Pods.
+func GetPodsScheduled(masterNodes sets.String, pods *v1.PodList) (scheduledPods, notScheduledPods []v1.Pod) {
+	for _, pod := range pods.Items {
+		if !masterNodes.Has(pod.Spec.NodeName) {
+			if pod.Spec.NodeName != "" {
+				_, scheduledCondition := podutil.GetPodCondition(&pod.Status, v1.PodScheduled)
+				framework.ExpectEqual(scheduledCondition != nil, true)
+				framework.ExpectEqual(scheduledCondition.Status, v1.ConditionTrue)
+				scheduledPods = append(scheduledPods, pod)
+			} else {
+				_, scheduledCondition := podutil.GetPodCondition(&pod.Status, v1.PodScheduled)
+				framework.ExpectEqual(scheduledCondition != nil, true)
+				framework.ExpectEqual(scheduledCondition.Status, v1.ConditionFalse)
+				if scheduledCondition.Reason == "Unschedulable" {
+
+					notScheduledPods = append(notScheduledPods, pod)
+				}
+			}
+		}
+	}
+	return
 }

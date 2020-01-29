@@ -30,6 +30,7 @@ import (
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 )
 
@@ -71,7 +72,7 @@ var _ = utils.SIGDescribe("vcp at scale [Feature:vsphere] ", func() {
 	)
 
 	ginkgo.BeforeEach(func() {
-		framework.SkipUnlessProviderIs("vsphere")
+		e2eskipper.SkipUnlessProviderIs("vsphere")
 		Bootstrap(f)
 		client = f.ClientSet
 		namespace = f.Namespace.Name
@@ -92,11 +93,11 @@ var _ = utils.SIGDescribe("vcp at scale [Feature:vsphere] ", func() {
 		nodes, err = e2enode.GetReadySchedulableNodes(client)
 		framework.ExpectNoError(err)
 		if len(nodes.Items) < 2 {
-			framework.Skipf("Requires at least %d nodes (not %d)", 2, len(nodes.Items))
+			e2eskipper.Skipf("Requires at least %d nodes (not %d)", 2, len(nodes.Items))
 		}
 		// Verify volume count specified by the user can be satisfied
 		if volumeCount > volumesPerNode*len(nodes.Items) {
-			framework.Skipf("Cannot attach %d volumes to %d nodes. Maximum volumes that can be attached on %d nodes is %d", volumeCount, len(nodes.Items), len(nodes.Items), volumesPerNode*len(nodes.Items))
+			e2eskipper.Skipf("Cannot attach %d volumes to %d nodes. Maximum volumes that can be attached on %d nodes is %d", volumeCount, len(nodes.Items), len(nodes.Items), volumesPerNode*len(nodes.Items))
 		}
 		nodeSelectorList = createNodeLabels(client, namespace, nodes)
 	})
@@ -128,7 +129,7 @@ var _ = utils.SIGDescribe("vcp at scale [Feature:vsphere] ", func() {
 			case storageclass1:
 				scParams = nil
 			case storageclass2:
-				scParams[Policy_HostFailuresToTolerate] = "1"
+				scParams[PolicyHostFailuresToTolerate] = "1"
 			case storageclass3:
 				scParams[SpbmStoragePolicy] = policyName
 			case storageclass4:
@@ -157,6 +158,7 @@ var _ = utils.SIGDescribe("vcp at scale [Feature:vsphere] ", func() {
 			}
 		}
 		podList, err := client.CoreV1().Pods(namespace).List(metav1.ListOptions{})
+		framework.ExpectNoError(err, "Failed to list pods")
 		for _, pod := range podList.Items {
 			pvcClaimList = append(pvcClaimList, getClaimsForPod(&pod, volumesPerPod)...)
 			ginkgo.By("Deleting pod")

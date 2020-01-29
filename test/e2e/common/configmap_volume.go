@@ -23,10 +23,12 @@ import (
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	"k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
 
@@ -55,7 +57,7 @@ var _ = ginkgo.Describe("[sig-storage] ConfigMap", func() {
 
 	ginkgo.It("should be consumable from pods in volume as non-root with defaultMode and fsGroup set [LinuxOnly] [NodeFeature:FSGroup]", func() {
 		// Windows does not support RunAsUser / FSGroup SecurityContext options, and it does not support setting file permissions.
-		framework.SkipIfNodeOSDistroIs("windows")
+		e2eskipper.SkipIfNodeOSDistroIs("windows")
 		defaultMode := int32(0440) /* setting fsGroup sets mode to at least 440 */
 		doConfigMapE2EWithoutMappings(f, true, 1001, &defaultMode)
 	})
@@ -64,16 +66,14 @@ var _ = ginkgo.Describe("[sig-storage] ConfigMap", func() {
 		Release : v1.9
 		Testname: ConfigMap Volume, without mapping, non-root user
 		Description: Create a ConfigMap, create a Pod that mounts a volume and populates the volume with data stored in the ConfigMap. Pod is run as a non-root user with uid=1000. The ConfigMap that is created MUST be accessible to read from the newly created Pod using the volume mount. The file on the volume MUST have file mode set to default value of 0x644.
-		This test is marked LinuxOnly since Windows does not support running as UID / GID.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume as non-root [LinuxOnly] [NodeConformance]", func() {
-		// TODO(claudiub): Remove [LinuxOnly] tag when the WindowsRunAsUserName feature gate is enabled by default.
+	framework.ConformanceIt("should be consumable from pods in volume as non-root [NodeConformance]", func() {
 		doConfigMapE2EWithoutMappings(f, true, 0, nil)
 	})
 
 	ginkgo.It("should be consumable from pods in volume as non-root with FSGroup [LinuxOnly] [NodeFeature:FSGroup]", func() {
 		// Windows does not support RunAsUser / FSGroup SecurityContext options.
-		framework.SkipIfNodeOSDistroIs("windows")
+		e2eskipper.SkipIfNodeOSDistroIs("windows")
 		doConfigMapE2EWithoutMappings(f, true, 1001, nil)
 	})
 
@@ -101,16 +101,14 @@ var _ = ginkgo.Describe("[sig-storage] ConfigMap", func() {
 		Release : v1.9
 		Testname: ConfigMap Volume, with mapping, non-root user
 		Description: Create a ConfigMap, create a Pod that mounts a volume and populates the volume with data stored in the ConfigMap. Files are mapped to a path in the volume. Pod is run as a non-root user with uid=1000. The ConfigMap that is created MUST be accessible to read from the newly created Pod using the volume mount. The file on the volume MUST have file mode set to default value of 0x644.
-		This test is marked LinuxOnly since Windows does not support running as UID / GID.
 	*/
-	framework.ConformanceIt("should be consumable from pods in volume with mappings as non-root [LinuxOnly] [NodeConformance]", func() {
-		// TODO(claudiub): Remove [LinuxOnly] tag when the WindowsRunAsUserName feature gate is enabled by default.
+	framework.ConformanceIt("should be consumable from pods in volume with mappings as non-root [NodeConformance]", func() {
 		doConfigMapE2EWithMappings(f, true, 0, nil)
 	})
 
 	ginkgo.It("should be consumable from pods in volume with mappings as non-root with FSGroup [LinuxOnly] [NodeFeature:FSGroup]", func() {
 		// Windows does not support RunAsUser / FSGroup SecurityContext options.
-		framework.SkipIfNodeOSDistroIs("windows")
+		e2eskipper.SkipIfNodeOSDistroIs("windows")
 		doConfigMapE2EWithMappings(f, true, 1001, nil)
 	})
 
@@ -553,9 +551,55 @@ var _ = ginkgo.Describe("[sig-storage] ConfigMap", func() {
 
 	})
 
-	//The pod is in pending during volume creation until the configMap objects are available
-	//or until mount the configMap volume times out. There is no configMap object defined for the pod, so it should return timout exception unless it is marked optional.
-	//Slow (~5 mins)
+	// It should be forbidden to change data for configmaps marked as immutable, but
+	// allowed to modify its metadata independently of its state.
+	ginkgo.It("should be immutable if `immutable` field is set [Feature:ImmutableEphemeralVolume]", func() {
+		name := "immutable"
+		configMap := newConfigMap(f, name)
+
+		currentConfigMap, err := f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Create(configMap)
+		framework.ExpectNoError(err, "Failed to create config map %q in namespace %q", configMap.Name, configMap.Namespace)
+
+		currentConfigMap.Data["data-4"] = "value-4"
+		currentConfigMap, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Update(currentConfigMap)
+		framework.ExpectNoError(err, "Failed to update config map %q in namespace %q", configMap.Name, configMap.Namespace)
+
+		// Mark config map as immutable.
+		trueVal := true
+		currentConfigMap.Immutable = &trueVal
+		currentConfigMap, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Update(currentConfigMap)
+		framework.ExpectNoError(err, "Failed to mark config map %q in namespace %q as immutable", configMap.Name, configMap.Namespace)
+
+		// Ensure data can't be changed now.
+		currentConfigMap.Data["data-5"] = "value-5"
+		_, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Update(currentConfigMap)
+		framework.ExpectEqual(apierrors.IsInvalid(err), true)
+
+		// Ensure config map can't be switched from immutable to mutable.
+		currentConfigMap, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Get(name, metav1.GetOptions{})
+		framework.ExpectNoError(err, "Failed to get config map %q in namespace %q", configMap.Name, configMap.Namespace)
+		framework.ExpectEqual(*currentConfigMap.Immutable, true)
+
+		falseVal := false
+		currentConfigMap.Immutable = &falseVal
+		_, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Update(currentConfigMap)
+		framework.ExpectEqual(apierrors.IsInvalid(err), true)
+
+		// Ensure that metadata can be changed.
+		currentConfigMap, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Get(name, metav1.GetOptions{})
+		framework.ExpectNoError(err, "Failed to get config map %q in namespace %q", configMap.Name, configMap.Namespace)
+		currentConfigMap.Labels = map[string]string{"label1": "value1"}
+		_, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Update(currentConfigMap)
+		framework.ExpectNoError(err, "Failed to update config map %q in namespace %q", configMap.Name, configMap.Namespace)
+
+		// Ensure that immutable config map can be deleted.
+		err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Delete(name, &metav1.DeleteOptions{})
+		framework.ExpectNoError(err, "Failed to delete config map %q in namespace %q", configMap.Name, configMap.Namespace)
+	})
+
+	// The pod is in pending during volume creation until the configMap objects are available
+	// or until mount the configMap volume times out. There is no configMap object defined for the pod, so it should return timout exception unless it is marked optional.
+	// Slow (~5 mins)
 	ginkgo.It("Should fail non-optional pod creation due to configMap object does not exist [Slow]", func() {
 		volumeMountPath := "/etc/configmap-volumes"
 		podName := "pod-configmaps-" + string(uuid.NewUUID())
@@ -563,9 +607,9 @@ var _ = ginkgo.Describe("[sig-storage] ConfigMap", func() {
 		framework.ExpectError(err, "created pod %q with non-optional configMap in namespace %q", podName, f.Namespace.Name)
 	})
 
-	//ConfigMap object defined for the pod, If a key is specified which is not present in the ConfigMap,
+	// ConfigMap object defined for the pod, If a key is specified which is not present in the ConfigMap,
 	// the volume setup will error unless it is marked optional, during the pod creation.
-	//Slow (~5 mins)
+	// Slow (~5 mins)
 	ginkgo.It("Should fail non-optional pod creation due to the key in the configMap object does not exist [Slow]", func() {
 		volumeMountPath := "/etc/configmap-volumes"
 		podName := "pod-configmaps-" + string(uuid.NewUUID())
@@ -758,7 +802,7 @@ func createNonOptionalConfigMapPod(f *framework.Framework, volumeMountPath, podN
 	createContainerName := "createcm-volume-test"
 	createVolumeName := "createcm-volume"
 
-	//creating a pod without configMap object created, by mentioning the configMap volume source's local reference name
+	// creating a pod without configMap object created, by mentioning the configMap volume source's local reference name
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: podName,
@@ -814,7 +858,7 @@ func createNonOptionalConfigMapPodWithConfig(f *framework.Framework, volumeMount
 	if configMap, err = f.ClientSet.CoreV1().ConfigMaps(f.Namespace.Name).Create(configMap); err != nil {
 		framework.Failf("unable to create test configMap %s: %v", configMap.Name, err)
 	}
-	//creating a pod with configMap object, but with different key which is not present in configMap object.
+	// creating a pod with configMap object, but with different key which is not present in configMap object.
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: podName,

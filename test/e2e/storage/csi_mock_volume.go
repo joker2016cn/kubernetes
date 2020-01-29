@@ -27,7 +27,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -277,7 +277,7 @@ var _ = utils.SIGDescribe("CSI mock volume", func() {
 				attachmentName := fmt.Sprintf("csi-%x", attachmentHash)
 				_, err = m.cs.StorageV1().VolumeAttachments().Get(attachmentName, metav1.GetOptions{})
 				if err != nil {
-					if errors.IsNotFound(err) {
+					if apierrors.IsNotFound(err) {
 						if !test.disableAttach {
 							framework.ExpectNoError(err, "Expected VolumeAttachment but none was found")
 						}
@@ -461,11 +461,10 @@ var _ = utils.SIGDescribe("CSI mock volume", func() {
 				init(tp)
 				defer cleanup()
 
-				ns := f.Namespace.Name
 				sc, pvc, pod := createPod(false)
 				gomega.Expect(pod).NotTo(gomega.BeNil(), "while creating pod for resizing")
 
-				gomega.Expect(*sc.AllowVolumeExpansion).To(gomega.BeTrue(), "failed creating sc with allowed expansion")
+				framework.ExpectEqual(*sc.AllowVolumeExpansion, true, "failed creating sc with allowed expansion")
 
 				err = e2epod.WaitForPodNameRunningInNamespace(m.cs, pod.Name, pod.Namespace)
 				framework.ExpectNoError(err, "Failed to start pod1: %v", err)
@@ -505,8 +504,9 @@ var _ = utils.SIGDescribe("CSI mock volume", func() {
 					checkPVCSize()
 				} else {
 					ginkgo.By("Checking for conditions on pvc")
-					pvc, err = m.cs.CoreV1().PersistentVolumeClaims(ns).Get(pvc.Name, metav1.GetOptions{})
-					framework.ExpectNoError(err, "While fetching pvc after controller resize")
+					npvc, err := testsuites.WaitForPendingFSResizeCondition(pvc, m.cs)
+					framework.ExpectNoError(err, "While waiting for pvc to have fs resizing condition")
+					pvc = npvc
 
 					inProgressConditions := pvc.Status.Conditions
 					if len(inProgressConditions) > 0 {
@@ -557,7 +557,7 @@ var _ = utils.SIGDescribe("CSI mock volume", func() {
 				sc, pvc, pod := createPod(false)
 				gomega.Expect(pod).NotTo(gomega.BeNil(), "while creating pod for resizing")
 
-				gomega.Expect(*sc.AllowVolumeExpansion).To(gomega.BeTrue(), "failed creating sc with allowed expansion")
+				framework.ExpectEqual(*sc.AllowVolumeExpansion, true, "failed creating sc with allowed expansion")
 
 				err = e2epod.WaitForPodNameRunningInNamespace(m.cs, pod.Name, pod.Namespace)
 				framework.ExpectNoError(err, "Failed to start pod1: %v", err)
@@ -610,7 +610,10 @@ func waitForMaxVolumeCondition(pod *v1.Pod, cs clientset.Interface) error {
 		}
 		return false, nil
 	})
-	return waitErr
+	if waitErr != nil {
+		return fmt.Errorf("error waiting for pod %s/%s to have max volume condition: %v", pod.Namespace, pod.Name, waitErr)
+	}
+	return nil
 }
 
 func checkCSINodeForLimits(nodeName string, driverName string, cs clientset.Interface) (int32, error) {
@@ -618,7 +621,7 @@ func checkCSINodeForLimits(nodeName string, driverName string, cs clientset.Inte
 
 	waitErr := wait.PollImmediate(10*time.Second, csiNodeLimitUpdateTimeout, func() (bool, error) {
 		csiNode, err := cs.StorageV1().CSINodes().Get(nodeName, metav1.GetOptions{})
-		if err != nil && !errors.IsNotFound(err) {
+		if err != nil && !apierrors.IsNotFound(err) {
 			return false, err
 		}
 		attachLimit = getVolumeLimitFromCSINode(csiNode, driverName)
@@ -627,7 +630,10 @@ func checkCSINodeForLimits(nodeName string, driverName string, cs clientset.Inte
 		}
 		return false, nil
 	})
-	return attachLimit, waitErr
+	if waitErr != nil {
+		return 0, fmt.Errorf("error waiting for non-zero volume limit of driver %s on node %s: %v", driverName, nodeName, waitErr)
+	}
+	return attachLimit, nil
 }
 
 func startPausePod(cs clientset.Interface, t testsuites.StorageClassTest, node e2epod.NodeSelection, ns string) (*storagev1.StorageClass, *v1.PersistentVolumeClaim, *v1.Pod) {
@@ -784,6 +790,13 @@ func checkPodLogs(cs clientset.Interface, namespace, driverPodName, driverContai
 			numNodeUnpublishVolume++
 		}
 	}
+	if numNodePublishVolume == 0 {
+		return fmt.Errorf("NodePublish was never called")
+	}
+
+	if numNodeUnpublishVolume == 0 {
+		return fmt.Errorf("NodeUnpublish was never called")
+	}
 	if expectPodInfo {
 		if foundAttributes.Len() != len(expectedAttributes) {
 			return fmt.Errorf("number of found volume attributes does not match, expected %d, got %d", len(expectedAttributes), foundAttributes.Len())
@@ -793,9 +806,7 @@ func checkPodLogs(cs clientset.Interface, namespace, driverPodName, driverContai
 	if foundAttributes.Len() != 0 {
 		return fmt.Errorf("some unexpected volume attributes were found: %+v", foundAttributes.List())
 	}
-	if numNodePublishVolume != numNodeUnpublishVolume {
-		return fmt.Errorf("number of NodePublishVolume %d != number of NodeUnpublishVolume %d", numNodePublishVolume, numNodeUnpublishVolume)
-	}
+
 	return nil
 }
 
@@ -805,7 +816,7 @@ func waitForCSIDriver(cs clientset.Interface, driverName string) error {
 	framework.Logf("waiting up to %v for CSIDriver %q", timeout, driverName)
 	for start := time.Now(); time.Since(start) < timeout; time.Sleep(framework.Poll) {
 		_, err := cs.StorageV1beta1().CSIDrivers().Get(driverName, metav1.GetOptions{})
-		if !errors.IsNotFound(err) {
+		if !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

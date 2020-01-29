@@ -77,7 +77,7 @@ type DiffOptions struct {
 	OpenAPISchema    openapi.Resources
 	DiscoveryClient  discovery.DiscoveryInterface
 	DynamicClient    dynamic.Interface
-	DryRunVerifier   *apply.DryRunVerifier
+	DryRunVerifier   *resource.DryRunVerifier
 	CmdNamespace     string
 	EnforceNamespace bool
 	Builder          *resource.Builder
@@ -130,7 +130,7 @@ type DiffProgram struct {
 	genericclioptions.IOStreams
 }
 
-func (d *DiffProgram) getCommand(args ...string) exec.Cmd {
+func (d *DiffProgram) getCommand(args ...string) (string, exec.Cmd) {
 	diff := ""
 	if envDiff := os.Getenv("KUBECTL_EXTERNAL_DIFF"); envDiff != "" {
 		diff = envDiff
@@ -143,12 +143,16 @@ func (d *DiffProgram) getCommand(args ...string) exec.Cmd {
 	cmd.SetStdout(d.Out)
 	cmd.SetStderr(d.ErrOut)
 
-	return cmd
+	return diff, cmd
 }
 
 // Run runs the detected diff program. `from` and `to` are the directory to diff.
 func (d *DiffProgram) Run(from, to string) error {
-	return d.getCommand(from, to).Run()
+	diff, cmd := d.getCommand(from, to)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to run %q: %v", diff, err)
+	}
+	return nil
 }
 
 // Printer is used to print an object.
@@ -291,7 +295,7 @@ func (obj InfoObject) Merged() (runtime.Object, error) {
 	// Build the patcher, and then apply the patch with dry-run, unless the object doesn't exist, in which case we need to create it.
 	if obj.Live() == nil {
 		// Dry-run create if the object doesn't exist.
-		return resource.NewHelper(obj.Info.Client, obj.Info.Mapping).Create(
+		return resource.NewHelper(obj.Info.Client, obj.Info.Mapping).CreateWithOptions(
 			obj.Info.Namespace,
 			true,
 			obj.LocalObj,
@@ -423,10 +427,7 @@ func (o *DiffOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return err
 	}
 
-	o.DryRunVerifier = &apply.DryRunVerifier{
-		Finder:        cmdutil.NewCRDFinder(cmdutil.CRDFromDynamic(o.DynamicClient)),
-		OpenAPIGetter: o.DiscoveryClient,
-	}
+	o.DryRunVerifier = resource.NewDryRunVerifier(o.DynamicClient, o.DiscoveryClient)
 
 	o.CmdNamespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {

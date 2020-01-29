@@ -37,7 +37,6 @@ pkg/apis/flowcontrol/v1alpha1
 pkg/apis/networking/v1
 pkg/apis/node/v1alpha1
 pkg/apis/policy/v1beta1
-pkg/apis/rbac
 pkg/apis/rbac/v1
 pkg/apis/rbac/v1alpha1
 pkg/apis/rbac/v1beta1
@@ -102,11 +101,9 @@ pkg/features
 pkg/kubeapiserver
 pkg/kubeapiserver/options
 pkg/kubectl/cmd/convert
-pkg/kubelet/apis/config
 pkg/kubelet/apis/config/v1beta1
 pkg/kubelet/checkpointmanager/testing/example_checkpoint_formats/v1
 pkg/kubelet/cm
-pkg/kubelet/config
 pkg/kubelet/container
 pkg/kubelet/container/testing
 pkg/kubelet/dockershim
@@ -172,7 +169,6 @@ pkg/registry/core/service/portallocator/controller
 pkg/registry/core/service/storage
 pkg/registry/core/serviceaccount/storage
 pkg/registry/events/rest
-pkg/registry/extensions/controller/storage
 pkg/registry/extensions/rest
 pkg/registry/flowcontrol/rest
 pkg/registry/networking/rest
@@ -209,7 +205,6 @@ pkg/util/procfs
 pkg/util/removeall
 pkg/util/rlimit
 pkg/util/selinux
-pkg/util/sysctl/testing
 pkg/util/taints
 pkg/volume
 pkg/volume/azure_dd
@@ -275,7 +270,6 @@ staging/src/k8s.io/apiextensions-apiserver/pkg/apiserver
 staging/src/k8s.io/apiextensions-apiserver/pkg/cmd/server
 staging/src/k8s.io/apiextensions-apiserver/pkg/controller/finalizer
 staging/src/k8s.io/apiextensions-apiserver/pkg/controller/status
-staging/src/k8s.io/apiextensions-apiserver/pkg/features
 staging/src/k8s.io/apiextensions-apiserver/pkg/registry/customresource
 staging/src/k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition
 staging/src/k8s.io/apimachinery/pkg/api/apitesting/fuzzer
@@ -481,6 +475,7 @@ staging/src/k8s.io/kubectl/pkg/cmd/logs
 staging/src/k8s.io/kubectl/pkg/cmd/patch
 staging/src/k8s.io/kubectl/pkg/cmd/plugin
 staging/src/k8s.io/kubectl/pkg/cmd/portforward
+staging/src/k8s.io/kubectl/pkg/cmd/proxy
 staging/src/k8s.io/kubectl/pkg/cmd/replace
 staging/src/k8s.io/kubectl/pkg/cmd/rollingupdate
 staging/src/k8s.io/kubectl/pkg/cmd/rollout
@@ -519,5 +514,4 @@ staging/src/k8s.io/sample-apiserver/pkg/apis/wardle/v1alpha1
 staging/src/k8s.io/sample-apiserver/pkg/registry/wardle/fischer
 staging/src/k8s.io/sample-apiserver/pkg/registry/wardle/flunder
 test/e2e/common
-test/e2e/storage/vsphere
 test/utils

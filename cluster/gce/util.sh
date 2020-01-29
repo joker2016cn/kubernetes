@@ -620,7 +620,7 @@ function write-windows-node-env {
 function build-linux-node-labels {
   local node_type=$1
   local node_labels=""
-  if [[ "${KUBE_PROXY_DAEMONSET:-}" == "true" && "${master}" != "true" ]]; then
+  if [[ "${KUBE_PROXY_DAEMONSET:-}" == "true" && "${node_type}" != "master" ]]; then
     # Add kube-proxy daemonset label to node to avoid situation during cluster
     # upgrade/downgrade when there are two instances of kube-proxy running on a node.
     node_labels="node.kubernetes.io/kube-proxy-ds-ready=true"
@@ -1127,7 +1127,6 @@ NETWORK_PROJECT_ID: $(yaml-quote ${NETWORK_PROJECT})
 SERVICE_CLUSTER_IP_RANGE: $(yaml-quote ${SERVICE_CLUSTER_IP_RANGE})
 KUBERNETES_MASTER_NAME: $(yaml-quote ${KUBERNETES_MASTER_NAME})
 ALLOCATE_NODE_CIDRS: $(yaml-quote ${ALLOCATE_NODE_CIDRS:-false})
-ENABLE_CLUSTER_MONITORING: $(yaml-quote ${ENABLE_CLUSTER_MONITORING:-none})
 ENABLE_METRICS_SERVER: $(yaml-quote ${ENABLE_METRICS_SERVER:-false})
 ENABLE_METADATA_AGENT: $(yaml-quote ${ENABLE_METADATA_AGENT:-none})
 METADATA_AGENT_CPU_REQUEST: $(yaml-quote ${METADATA_AGENT_CPU_REQUEST:-})
@@ -1144,6 +1143,7 @@ NODE_PROBLEM_DETECTOR_TAR_HASH: $(yaml-quote ${NODE_PROBLEM_DETECTOR_TAR_HASH:-}
 NODE_PROBLEM_DETECTOR_RELEASE_PATH: $(yaml-quote ${NODE_PROBLEM_DETECTOR_RELEASE_PATH:-})
 NODE_PROBLEM_DETECTOR_CUSTOM_FLAGS: $(yaml-quote ${NODE_PROBLEM_DETECTOR_CUSTOM_FLAGS:-})
 CNI_STORAGE_PATH: $(yaml-quote ${CNI_STORAGE_PATH:-})
+CNI_TAR_PREFIX: $(yaml-quote ${CNI_TAR_PREFIX:-})
 CNI_VERSION: $(yaml-quote ${CNI_VERSION:-})
 CNI_SHA1: $(yaml-quote ${CNI_SHA1:-})
 ENABLE_NODE_LOGGING: $(yaml-quote ${ENABLE_NODE_LOGGING:-false})

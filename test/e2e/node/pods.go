@@ -17,6 +17,7 @@ limitations under the License.
 package node
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -48,7 +49,7 @@ var _ = SIGDescribe("Pods Extended", func() {
 			Testname: Pods, delete grace period
 			Description: Create a pod, make sure it is running. Using the http client send a ‘delete’ with gracePeriodSeconds=30. Pod SHOULD get deleted within 30 seconds.
 		*/
-		framework.ConformanceIt("should be submitted and removed", func() {
+		ginkgo.It("should be submitted and removed [Flaky]", func() {
 			ginkgo.By("creating the pod")
 			name := "pod-submit-remove-" + string(uuid.NewUUID())
 			value := strconv.Itoa(time.Now().Nanosecond())
@@ -108,6 +109,7 @@ var _ = SIGDescribe("Pods Extended", func() {
 
 			ginkgo.By("verifying the kubelet observed the termination notice")
 
+			start := time.Now()
 			err = wait.Poll(time.Second*5, time.Second*30, func() (bool, error) {
 				podList, err := e2ekubelet.GetKubeletPods(f.ClientSet, pod.Spec.NodeName)
 				if err != nil {
@@ -122,6 +124,8 @@ var _ = SIGDescribe("Pods Extended", func() {
 						framework.Logf("deletion has not yet been observed")
 						return false, nil
 					}
+					data, _ := json.Marshal(kubeletPod)
+					framework.Logf("start=%s, now=%s, kubelet pod: %s", start, time.Now(), string(data))
 					return false, nil
 				}
 				framework.Logf("no pod exists with the name we were looking for, assuming the termination request was observed and completed")

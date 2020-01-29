@@ -24,11 +24,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	batchv1beta1 "k8s.io/api/batch/v1beta1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionstestserver "k8s.io/apiextensions-apiserver/test/integration/fixtures"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,6 +40,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 
 	"github.com/onsi/ginkgo"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -573,8 +574,18 @@ var _ = SIGDescribe("Garbage collector", func() {
 		if err := deployClient.Delete(deployment.ObjectMeta.Name, deleteOptions); err != nil {
 			framework.Failf("failed to delete the deployment: %v", err)
 		}
-		ginkgo.By("wait for 30 seconds to see if the garbage collector mistakenly deletes the rs")
-		time.Sleep(30 * time.Second)
+		ginkgo.By("wait for deployment deletion to see if the garbage collector mistakenly deletes the rs")
+		err = wait.PollImmediate(500*time.Millisecond, 1*time.Minute, func() (bool, error) {
+			dList, err := deployClient.List(metav1.ListOptions{})
+			if err != nil {
+				return false, fmt.Errorf("failed to list deployments: %v", err)
+			}
+			return len(dList.Items) == 0, nil
+		})
+		if err != nil {
+			framework.Failf("Failed to wait for the Deployment to be deleted: %v", err)
+		}
+		// Once the deployment object is gone, we'll know the GC has finished performing any relevant actions.
 		objects := map[string]int{"Deployments": 0, "ReplicaSets": 1, "Pods": 2}
 		ok, err := verifyRemainingObjects(f, objects)
 		if err != nil {
@@ -667,7 +678,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 				framework.Logf("")
 				return false, nil
 			}
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				return true, nil
 			}
 			return false, err
@@ -769,7 +780,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 				framework.Logf("")
 				return false, nil
 			}
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				return true, nil
 			}
 			return false, err
@@ -882,7 +893,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		definition := apiextensionstestserver.NewRandomNameV1CustomResourceDefinition(apiextensionsv1.ClusterScoped)
 		defer func() {
 			err = apiextensionstestserver.DeleteV1CustomResourceDefinition(definition, apiExtensionClient)
-			if err != nil && !errors.IsNotFound(err) {
+			if err != nil && !apierrors.IsNotFound(err) {
 				framework.Failf("failed to delete CustomResourceDefinition: %v", err)
 			}
 		}()
@@ -949,12 +960,15 @@ var _ = SIGDescribe("Garbage collector", func() {
 		}
 
 		// Ensure the dependent is deleted.
+		var lastDependent *unstructured.Unstructured
+		var err2 error
 		if err := wait.Poll(5*time.Second, 60*time.Second, func() (bool, error) {
-			_, err := resourceClient.Get(dependentName, metav1.GetOptions{})
-			return errors.IsNotFound(err), nil
+			lastDependent, err2 = resourceClient.Get(dependentName, metav1.GetOptions{})
+			return apierrors.IsNotFound(err2), nil
 		}); err != nil {
 			framework.Logf("owner: %#v", persistedOwner)
 			framework.Logf("dependent: %#v", persistedDependent)
+			framework.Logf("dependent last state: %#v", lastDependent)
 			framework.Failf("failed waiting for dependent resource %q to be deleted", dependentName)
 		}
 
@@ -963,7 +977,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		if err == nil {
 			framework.Failf("expected owner resource %q to be deleted", ownerName)
 		} else {
-			if !errors.IsNotFound(err) {
+			if !apierrors.IsNotFound(err) {
 				framework.Failf("unexpected error getting owner resource %q: %v", ownerName, err)
 			}
 		}
@@ -985,7 +999,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		definition := apiextensionstestserver.NewRandomNameV1CustomResourceDefinition(apiextensionsv1.ClusterScoped)
 		defer func() {
 			err = apiextensionstestserver.DeleteV1CustomResourceDefinition(definition, apiExtensionClient)
-			if err != nil && !errors.IsNotFound(err) {
+			if err != nil && !apierrors.IsNotFound(err) {
 				framework.Failf("failed to delete CustomResourceDefinition: %v", err)
 			}
 		}()
@@ -1056,7 +1070,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 			if err == nil {
 				return false, nil
 			}
-			if err != nil && !errors.IsNotFound(err) {
+			if err != nil && !apierrors.IsNotFound(err) {
 				return false, fmt.Errorf("failed to get owner: %v", err)
 			}
 			return true, nil
@@ -1075,7 +1089,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 	})
 
 	ginkgo.It("should delete jobs and pods created by cronjob", func() {
-		framework.SkipIfMissingResource(f.DynamicClient, CronJobGroupVersionResource, f.Namespace.Name)
+		e2eskipper.SkipIfMissingResource(f.DynamicClient, CronJobGroupVersionResource, f.Namespace.Name)
 
 		ginkgo.By("Create the cronjob")
 		cronJob := newCronJob("simple", "*/1 * * * ?")

@@ -22,7 +22,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	policyv1beta1 "k8s.io/api/policy/v1beta1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
@@ -34,6 +34,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/framework/auth"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	utilpointer "k8s.io/utils/pointer"
 
@@ -52,10 +53,10 @@ var _ = SIGDescribe("PodSecurityPolicy", func() {
 	var ns string // Test namespace, for convenience
 	ginkgo.BeforeEach(func() {
 		if !framework.IsPodSecurityPolicyEnabled(f.ClientSet) {
-			framework.Skipf("PodSecurityPolicy not enabled")
+			e2eskipper.Skipf("PodSecurityPolicy not enabled")
 		}
 		if !auth.IsRBACEnabled(f.ClientSet.RbacV1()) {
-			framework.Skipf("RBAC not enabled")
+			e2eskipper.Skipf("RBAC not enabled")
 		}
 		ns = f.Namespace.Name
 
@@ -122,7 +123,7 @@ var _ = SIGDescribe("PodSecurityPolicy", func() {
 
 func expectForbidden(err error) {
 	framework.ExpectError(err, "should be forbidden")
-	framework.ExpectEqual(apierrs.IsForbidden(err), true, "should be forbidden error")
+	framework.ExpectEqual(apierrors.IsForbidden(err), true, "should be forbidden error")
 }
 
 func testPrivilegedPods(tester func(pod *v1.Pod)) {
@@ -166,7 +167,7 @@ func testPrivilegedPods(tester func(pod *v1.Pod)) {
 		tester(hostipc)
 	})
 
-	if framework.IsAppArmorSupported() {
+	if isAppArmorSupported() {
 		ginkgo.By("Running a custom AppArmor profile pod", func() {
 			aa := restrictedPod("apparmor")
 			// Every node is expected to have the docker-default profile.
@@ -369,4 +370,9 @@ func restrictedPSP(name string) *policyv1beta1.PodSecurityPolicy {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// isAppArmorSupported checks whether the AppArmor is supported by the node OS distro.
+func isAppArmorSupported() bool {
+	return framework.NodeOSDistroIs(e2eskipper.AppArmorDistros...)
 }

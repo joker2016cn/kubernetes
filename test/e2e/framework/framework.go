@@ -30,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,6 +73,7 @@ type Framework struct {
 	// test multiple times in parallel.
 	UniqueName string
 
+	clientConfig                     *rest.Config
 	ClientSet                        clientset.Interface
 	KubemarkExternalClusterClientSet clientset.Interface
 
@@ -102,6 +105,14 @@ type Framework struct {
 	// should abort, the AfterSuite hook should run all Cleanup actions.
 	cleanupHandle CleanupActionHandle
 
+	// afterEaches is a map of name to function to be called after each test.  These are not
+	// cleared.  The call order is randomized so that no dependencies can grow between
+	// the various afterEaches
+	afterEaches map[string]AfterEachActionFunc
+
+	// beforeEachStarted indicates that BeforeEach has started
+	beforeEachStarted bool
+
 	// configuration for framework's client
 	Options Options
 
@@ -112,6 +123,9 @@ type Framework struct {
 	// Place to keep ClusterAutoscaler metrics from before test in order to compute delta.
 	clusterAutoscalerMetricsBeforeTest e2emetrics.Collection
 }
+
+// AfterEachActionFunc is a function that can be called after each test
+type AfterEachActionFunc func(f *Framework, failed bool)
 
 // TestDataSummary is an interface for managing test data.
 type TestDataSummary interface {
@@ -146,6 +160,20 @@ func NewFramework(baseName string, options Options, client clientset.Interface) 
 		ClientSet:                client,
 	}
 
+	f.AddAfterEach("dumpNamespaceInfo", func(f *Framework, failed bool) {
+		if !failed {
+			return
+		}
+		if !TestContext.DumpLogsOnFailure {
+			return
+		}
+		if !f.SkipNamespaceCreation {
+			for _, ns := range f.namespacesToDelete {
+				DumpAllNamespaceInfo(f.ClientSet, ns.Name)
+			}
+		}
+	})
+
 	ginkgo.BeforeEach(f.BeforeEach)
 	ginkgo.AfterEach(f.AfterEach)
 
@@ -154,6 +182,8 @@ func NewFramework(baseName string, options Options, client clientset.Interface) 
 
 // BeforeEach gets a client and makes a namespace.
 func (f *Framework) BeforeEach() {
+	f.beforeEachStarted = true
+
 	// The fact that we need this feels like a bug in ginkgo.
 	// https://github.com/onsi/ginkgo/issues/222
 	f.cleanupHandle = AddCleanupAction(f.AfterEach)
@@ -170,6 +200,7 @@ func (f *Framework) BeforeEach() {
 		if TestContext.KubeAPIContentType != "" {
 			config.ContentType = TestContext.KubeAPIContentType
 		}
+		f.clientConfig = rest.CopyConfig(config)
 		f.ClientSet, err = clientset.NewForConfig(config)
 		ExpectNoError(err)
 		f.DynamicClient, err = dynamic.NewForConfig(config)
@@ -315,9 +346,34 @@ func printSummaries(summaries []TestDataSummary, testBaseName string) {
 	}
 }
 
+// AddAfterEach is a way to add a function to be called after every test.  The execution order is intentionally random
+// to avoid growing dependencies.  If you register the same name twice, it is a coding error and will panic.
+func (f *Framework) AddAfterEach(name string, fn AfterEachActionFunc) {
+	if _, ok := f.afterEaches[name]; ok {
+		panic(fmt.Sprintf("%q is already registered", name))
+	}
+
+	if f.afterEaches == nil {
+		f.afterEaches = map[string]AfterEachActionFunc{}
+	}
+	f.afterEaches[name] = fn
+}
+
 // AfterEach deletes the namespace, after reading its events.
 func (f *Framework) AfterEach() {
+	// If BeforeEach never started AfterEach should be skipped.
+	// Currently some tests under e2e/storage have this condition.
+	if !f.beforeEachStarted {
+		return
+	}
+
 	RemoveCleanupAction(f.cleanupHandle)
+
+	// This should not happen. Given ClientSet is a public field a test must have updated it!
+	// Error out early before any API calls during cleanup.
+	if f.ClientSet == nil {
+		Failf("The framework ClientSet must not be nil at this point")
+	}
 
 	// DeleteNamespace at the very end in defer, to avoid any
 	// expectation failures preventing deleting the namespace.
@@ -332,6 +388,11 @@ func (f *Framework) AfterEach() {
 				if err := f.ClientSet.CoreV1().Namespaces().Delete(ns.Name, nil); err != nil {
 					if !apierrors.IsNotFound(err) {
 						nsDeletionErrors[ns.Name] = err
+
+						// Dump namespace if we are unable to delete the namespace and the dump was not already performed.
+						if !ginkgo.CurrentGinkgoTestDescription().Failed && TestContext.DumpLogsOnFailure {
+							DumpAllNamespaceInfo(f.ClientSet, ns.Name)
+						}
 					} else {
 						Logf("Namespace %v was already deleted", ns.Name)
 					}
@@ -347,6 +408,7 @@ func (f *Framework) AfterEach() {
 
 		// Paranoia-- prevent reuse!
 		f.Namespace = nil
+		f.clientConfig = nil
 		f.ClientSet = nil
 		f.namespacesToDelete = nil
 
@@ -360,12 +422,9 @@ func (f *Framework) AfterEach() {
 		}
 	}()
 
-	// Print events if the test failed.
-	if ginkgo.CurrentGinkgoTestDescription().Failed && TestContext.DumpLogsOnFailure {
-		// Pass both unversioned client and versioned clientset, till we have removed all uses of the unversioned client.
-		if !f.SkipNamespaceCreation {
-			DumpAllNamespaceInfo(f.ClientSet, f.Namespace.Name)
-		}
+	// run all aftereach functions in random order to ensure no dependencies grow
+	for _, afterEachFn := range f.afterEaches {
+		afterEachFn(f, ginkgo.CurrentGinkgoTestDescription().Failed)
 	}
 
 	if TestContext.GatherKubeSystemResourceUsageData != "false" && TestContext.GatherKubeSystemResourceUsageData != "none" && f.gatherer != nil {
@@ -483,6 +542,15 @@ func (f *Framework) WaitForPodRunningSlow(podName string) error {
 // success or failure.
 func (f *Framework) WaitForPodNoLongerRunning(podName string) error {
 	return e2epod.WaitForPodNoLongerRunningInNamespace(f.ClientSet, podName, f.Namespace.Name)
+}
+
+// ClientConfig an externally accessible method for reading the kube client config.
+func (f *Framework) ClientConfig() *rest.Config {
+	ret := rest.CopyConfig(f.clientConfig)
+	// json is least common denominator
+	ret.ContentType = runtime.ContentTypeJSON
+	ret.AcceptContentTypes = runtime.ContentTypeJSON
+	return ret
 }
 
 // TestContainerOutput runs the given pod in the given namespace and waits

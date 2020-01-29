@@ -26,7 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -114,7 +114,7 @@ var alternativeAPIVersions = []apiextensionsv1.CustomResourceDefinitionVersion{
 }
 
 var _ = SIGDescribe("CustomResourceConversionWebhook [Privileged:ClusterAdmin]", func() {
-	var context *certContext
+	var certCtx *certContext
 	f := framework.NewDefaultFramework("crd-webhook")
 	servicePort := int32(9443)
 	containerPort := int32(9444)
@@ -127,10 +127,10 @@ var _ = SIGDescribe("CustomResourceConversionWebhook [Privileged:ClusterAdmin]",
 		namespaceName = f.Namespace.Name
 
 		ginkgo.By("Setting up server cert")
-		context = setupServerCert(f.Namespace.Name, serviceCRDName)
+		certCtx = setupServerCert(f.Namespace.Name, serviceCRDName)
 		createAuthReaderRoleBindingForCRDConversion(f, f.Namespace.Name)
 
-		deployCustomResourceWebhookAndService(f, imageutils.GetE2EImage(imageutils.Agnhost), context, servicePort, containerPort)
+		deployCustomResourceWebhookAndService(f, imageutils.GetE2EImage(imageutils.Agnhost), certCtx, servicePort, containerPort)
 	})
 
 	ginkgo.AfterEach(func() {
@@ -150,7 +150,7 @@ var _ = SIGDescribe("CustomResourceConversionWebhook [Privileged:ClusterAdmin]",
 				Strategy: apiextensionsv1.WebhookConverter,
 				Webhook: &apiextensionsv1.WebhookConversion{
 					ClientConfig: &apiextensionsv1.WebhookClientConfig{
-						CABundle: context.signingCert,
+						CABundle: certCtx.signingCert,
 						Service: &apiextensionsv1.ServiceReference{
 							Namespace: f.Namespace.Name,
 							Name:      serviceCRDName,
@@ -185,7 +185,7 @@ var _ = SIGDescribe("CustomResourceConversionWebhook [Privileged:ClusterAdmin]",
 				Strategy: apiextensionsv1.WebhookConverter,
 				Webhook: &apiextensionsv1.WebhookConversion{
 					ClientConfig: &apiextensionsv1.WebhookClientConfig{
-						CABundle: context.signingCert,
+						CABundle: certCtx.signingCert,
 						Service: &apiextensionsv1.ServiceReference{
 							Namespace: f.Namespace.Name,
 							Name:      serviceCRDName,
@@ -236,14 +236,14 @@ func createAuthReaderRoleBindingForCRDConversion(f *framework.Framework, namespa
 			},
 		},
 	})
-	if err != nil && errors.IsAlreadyExists(err) {
+	if err != nil && apierrors.IsAlreadyExists(err) {
 		framework.Logf("role binding %s already exists", roleBindingCRDName)
 	} else {
 		framework.ExpectNoError(err, "creating role binding %s:webhook to access configMap", namespace)
 	}
 }
 
-func deployCustomResourceWebhookAndService(f *framework.Framework, image string, context *certContext, servicePort int32, containerPort int32) {
+func deployCustomResourceWebhookAndService(f *framework.Framework, image string, certCtx *certContext, servicePort int32, containerPort int32) {
 	ginkgo.By("Deploying the custom resource conversion webhook pod")
 	client := f.ClientSet
 
@@ -254,8 +254,8 @@ func deployCustomResourceWebhookAndService(f *framework.Framework, image string,
 		},
 		Type: v1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"tls.crt": context.cert,
-			"tls.key": context.key,
+			"tls.crt": certCtx.cert,
+			"tls.key": certCtx.key,
 		},
 	}
 	namespace := f.Namespace.Name
@@ -371,26 +371,28 @@ func deployCustomResourceWebhookAndService(f *framework.Framework, image string,
 	framework.ExpectNoError(err, "waiting for service %s/%s have %d endpoint", namespace, serviceCRDName, 1)
 }
 
-func verifyV1Object(f *framework.Framework, crd *apiextensionsv1.CustomResourceDefinition, obj *unstructured.Unstructured) {
+func verifyV1Object(crd *apiextensionsv1.CustomResourceDefinition, obj *unstructured.Unstructured) {
 	gomega.Expect(obj.GetAPIVersion()).To(gomega.BeEquivalentTo(crd.Spec.Group + "/v1"))
 	hostPort, exists := obj.Object["hostPort"]
-	gomega.Expect(exists).To(gomega.BeTrue())
+	framework.ExpectEqual(exists, true)
+
 	gomega.Expect(hostPort).To(gomega.BeEquivalentTo("localhost:8080"))
 	_, hostExists := obj.Object["host"]
-	gomega.Expect(hostExists).To(gomega.BeFalse())
+	framework.ExpectEqual(hostExists, false)
 	_, portExists := obj.Object["port"]
-	gomega.Expect(portExists).To(gomega.BeFalse())
+	framework.ExpectEqual(portExists, false)
 }
 
-func verifyV2Object(f *framework.Framework, crd *apiextensionsv1.CustomResourceDefinition, obj *unstructured.Unstructured) {
+func verifyV2Object(crd *apiextensionsv1.CustomResourceDefinition, obj *unstructured.Unstructured) {
 	gomega.Expect(obj.GetAPIVersion()).To(gomega.BeEquivalentTo(crd.Spec.Group + "/v2"))
 	_, hostPortExists := obj.Object["hostPort"]
-	gomega.Expect(hostPortExists).To(gomega.BeFalse())
+	framework.ExpectEqual(hostPortExists, false)
+
 	host, hostExists := obj.Object["host"]
-	gomega.Expect(hostExists).To(gomega.BeTrue())
+	framework.ExpectEqual(hostExists, true)
 	gomega.Expect(host).To(gomega.BeEquivalentTo("localhost"))
 	port, portExists := obj.Object["port"]
-	gomega.Expect(portExists).To(gomega.BeTrue())
+	framework.ExpectEqual(portExists, true)
 	gomega.Expect(port).To(gomega.BeEquivalentTo("8080"))
 }
 
@@ -413,7 +415,7 @@ func testCustomResourceConversionWebhook(f *framework.Framework, crd *apiextensi
 	ginkgo.By("v2 custom resource should be converted")
 	v2crd, err := customResourceClients["v2"].Get(name, metav1.GetOptions{})
 	framework.ExpectNoError(err, "Getting v2 of custom resource %s", name)
-	verifyV2Object(f, crd, v2crd)
+	verifyV2Object(crd, v2crd)
 }
 
 func testCRListConversion(f *framework.Framework, testCrd *crd.TestCrd) {
@@ -473,19 +475,19 @@ func testCRListConversion(f *framework.Framework, testCrd *crd.TestCrd) {
 	list, err := customResourceClients["v1"].List(metav1.ListOptions{})
 	gomega.Expect(err).To(gomega.BeNil())
 	gomega.Expect(len(list.Items)).To(gomega.BeIdenticalTo(2))
-	gomega.Expect((list.Items[0].GetName() == name1 && list.Items[1].GetName() == name2) ||
-		(list.Items[0].GetName() == name2 && list.Items[1].GetName() == name1)).To(gomega.BeTrue())
-	verifyV1Object(f, crd, &list.Items[0])
-	verifyV1Object(f, crd, &list.Items[1])
+	framework.ExpectEqual((list.Items[0].GetName() == name1 && list.Items[1].GetName() == name2) ||
+		(list.Items[0].GetName() == name2 && list.Items[1].GetName() == name1), true)
+	verifyV1Object(crd, &list.Items[0])
+	verifyV1Object(crd, &list.Items[1])
 
 	ginkgo.By("List CRs in v2")
 	list, err = customResourceClients["v2"].List(metav1.ListOptions{})
 	gomega.Expect(err).To(gomega.BeNil())
 	gomega.Expect(len(list.Items)).To(gomega.BeIdenticalTo(2))
-	gomega.Expect((list.Items[0].GetName() == name1 && list.Items[1].GetName() == name2) ||
-		(list.Items[0].GetName() == name2 && list.Items[1].GetName() == name1)).To(gomega.BeTrue())
-	verifyV2Object(f, crd, &list.Items[0])
-	verifyV2Object(f, crd, &list.Items[1])
+	framework.ExpectEqual((list.Items[0].GetName() == name1 && list.Items[1].GetName() == name2) ||
+		(list.Items[0].GetName() == name2 && list.Items[1].GetName() == name1), true)
+	verifyV2Object(crd, &list.Items[0])
+	verifyV2Object(crd, &list.Items[1])
 }
 
 // waitWebhookConversionReady sends stub custom resource creation requests requiring conversion until one succeeds.

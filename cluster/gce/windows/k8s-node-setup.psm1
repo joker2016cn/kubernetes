@@ -51,7 +51,7 @@
 #  - Document functions using proper syntax:
 #    https://technet.microsoft.com/en-us/library/hh847834(v=wps.620).aspx
 
-$INFRA_CONTAINER = 'gcr.io/gke-release/pause-win:1.0.0'
+$INFRA_CONTAINER = 'gcr.io/gke-release/pause-win:1.1.0'
 $GCE_METADATA_SERVER = "169.254.169.254"
 # The "management" interface is used by the kubelet and by Windows pods to talk
 # to the rest of the Kubernetes cluster *without NAT*. This interface does not
@@ -457,8 +457,17 @@ function Get_MgmtSubnet {
   $addr = (Get-NetIPAddress `
       -InterfaceAlias ${net_adapter}.ifAlias `
       -AddressFamily IPv4).IPAddress
-  $mask = (Get-WmiObject Win32_NetworkAdapterConfiguration |
-      Where-Object InterfaceIndex -eq $(${net_adapter}.ifIndex)).IPSubnet[0]
+  # Get the adapter's mask from the registry rather than WMI or some other
+  # approach: this is compatible with Windows' forthcoming LWVNICs (lightweight
+  # VNICs).
+  # https://github.com/kubernetes-sigs/sig-windows-tools/pull/16/commits/c5b5c67d5da6c23ad870cb16146eaa58131caf29
+  $adapter_registry = Get-Item `
+      -Path ("HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\" +
+             "Parameters\Interfaces\$($net_adapter.InterfaceGuid)")
+  # In this command the value name is 'DhcpSubnetMask' for current network
+  # interfaces but could be different for "LWVNIC" interfaces.
+  $mask = ($adapter_registry.GetValueNames() -like "*SubnetMask" |
+           % { $adapter_registry.GetValue($_) })
   $mgmt_subnet = `
     (ConvertTo_DecimalIP ${addr}) -band (ConvertTo_DecimalIP ${mask})
   $mgmt_subnet = ConvertTo_DottedDecimalIP ${mgmt_subnet}
@@ -1229,8 +1238,8 @@ function Verify-WorkerServices {
 }
 
 function DownloadAndInstall-Crictl {
-  $CRICTL_VERSION = "v1.16.1"
-  $CRICTL_SHA256 = "69a53602f9a8469d4a86284e318fe19b33e97577f7836f48e6f4fb2ed1822baa"
+  $CRICTL_VERSION = "v1.17.0"
+  $CRICTL_SHA256 = "781fd3bd15146a924c6fc2428b11d8a0f20fa04a0c8e00a9a5808f2cc37e0569"
 
   # Assume that presence of crictl.exe indicates that the crictl binaries
   # were already previously downloaded to this node.
@@ -1492,7 +1501,7 @@ function Install_Containerd {
 # Register and start containerd service.
 function Start_Containerd {
   Log-Output "Creating containerd service"
-  containerd.exe --register-service
+  containerd.exe --register-service --log-file ${env:LOGS_DIR}/containerd.log
   Log-Output "Starting containerd service"
   Start-Service containerd
 }
@@ -1542,7 +1551,7 @@ function Restart-LoggingAgent {
       Throw ("Timeout while waiting for StackdriverLogging service to stop")
     }
   }
-  
+
   Start-Service StackdriverLogging
 }
 
@@ -1604,12 +1613,12 @@ function Install-LoggingAgent {
 function Configure-LoggingAgent {
   $fluentd_config_dir = "$STACKDRIVER_ROOT\LoggingAgent\config.d"
   $fluentd_config_file = "$fluentd_config_dir\k8s_containers.conf"
-  
+
   # Create a configuration file for kubernetes containers.
   # The config.d directory should have already been created automatically, but
   # try creating again just in case.
   New-Item $fluentd_config_dir -ItemType 'directory' -Force | Out-Null
-  
+
   $config = $FLUENTD_CONFIG.replace('NODE_NAME', (hostname))
   $config | Out-File -FilePath $fluentd_config_file -Encoding ASCII
   Log-Output "Wrote fluentd logging config to $fluentd_config_file"
@@ -1710,6 +1719,20 @@ $FLUENTD_CONFIG = @'
   path /etc/kubernetes/logs/kube-proxy.log
   pos_file /etc/kubernetes/logs/gcp-kube-proxy.log.pos
   tag kube-proxy
+</source>
+
+# Example:
+# time="2019-12-10T21:27:59.836946700Z" level=info msg="loading plugin \"io.containerd.grpc.v1.cri\"..." type=io.containerd.grpc.v1
+<source>
+  @type tail
+  format multiline
+  multiline_flush_interval 5s
+  format_firstline /^time=/
+  format1 /^time="(?<time>[^ ]*)" level=(?<severity>\w*) (?<message>.*)/
+  time_format %Y-%m-%dT%H:%M:%S.%N%z
+  path /etc/kubernetes/logs/containerd.log
+  pos_file /etc/kubernetes/logs/gcp-containerd.log.pos
+  tag container-runtime
 </source>
 
 <match reform.**>

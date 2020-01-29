@@ -28,14 +28,15 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 )
 
 const (
-	Ext4FSType    = "ext4"
-	Ext3FSType    = "ext3"
-	InvalidFSType = "ext10"
-	ExecCommand   = "/bin/df -T /mnt/volume1 | /bin/awk 'FNR == 2 {print $2}' > /mnt/volume1/fstype && while true ; do sleep 2 ; done"
+	ext4FSType    = "ext4"
+	ext3FSType    = "ext3"
+	invalidFSType = "ext10"
+	execCommand   = "/bin/df -T /mnt/volume1 | /bin/awk 'FNR == 2 {print $2}' > /mnt/volume1/fstype && while true ; do sleep 2 ; done"
 )
 
 /*
@@ -71,7 +72,7 @@ var _ = utils.SIGDescribe("Volume FStype [Feature:vsphere]", func() {
 		namespace string
 	)
 	ginkgo.BeforeEach(func() {
-		framework.SkipUnlessProviderIs("vsphere")
+		e2eskipper.SkipUnlessProviderIs("vsphere")
 		Bootstrap(f)
 		client = f.ClientSet
 		namespace = f.Namespace.Name
@@ -80,17 +81,17 @@ var _ = utils.SIGDescribe("Volume FStype [Feature:vsphere]", func() {
 
 	ginkgo.It("verify fstype - ext3 formatted volume", func() {
 		ginkgo.By("Invoking Test for fstype: ext3")
-		invokeTestForFstype(f, client, namespace, Ext3FSType, Ext3FSType)
+		invokeTestForFstype(f, client, namespace, ext3FSType, ext3FSType)
 	})
 
 	ginkgo.It("verify fstype - default value should be ext4", func() {
 		ginkgo.By("Invoking Test for fstype: Default Value - ext4")
-		invokeTestForFstype(f, client, namespace, "", Ext4FSType)
+		invokeTestForFstype(f, client, namespace, "", ext4FSType)
 	})
 
 	ginkgo.It("verify invalid fstype", func() {
 		ginkgo.By("Invoking Test for fstype: invalid Value")
-		invokeTestForInvalidFstype(f, client, namespace, InvalidFSType)
+		invokeTestForInvalidFstype(f, client, namespace, invalidFSType)
 	})
 })
 
@@ -126,10 +127,11 @@ func invokeTestForInvalidFstype(f *framework.Framework, client clientset.Interfa
 	var pvclaims []*v1.PersistentVolumeClaim
 	pvclaims = append(pvclaims, pvclaim)
 	// Create pod to attach Volume to Node
-	pod, err := e2epod.CreatePod(client, namespace, nil, pvclaims, false, ExecCommand)
+	pod, err := e2epod.CreatePod(client, namespace, nil, pvclaims, false, execCommand)
 	framework.ExpectError(err)
 
 	eventList, err := client.CoreV1().Events(namespace).List(metav1.ListOptions{})
+	framework.ExpectNoError(err)
 
 	// Detach and delete volume
 	detachVolume(f, client, pod, persistentvolumes[0].Spec.VsphereVolume.VolumePath)
@@ -144,7 +146,7 @@ func invokeTestForInvalidFstype(f *framework.Framework, client clientset.Interfa
 			isFound = true
 		}
 	}
-	gomega.Expect(isFound).To(gomega.BeTrue(), "Unable to verify MountVolume.MountDevice failure")
+	framework.ExpectEqual(isFound, true, "Unable to verify MountVolume.MountDevice failure")
 }
 
 func createVolume(client clientset.Interface, namespace string, scParameters map[string]string) (*v1.PersistentVolumeClaim, []*v1.PersistentVolume) {
@@ -169,7 +171,7 @@ func createPodAndVerifyVolumeAccessible(client clientset.Interface, namespace st
 	pvclaims = append(pvclaims, pvclaim)
 	ginkgo.By("Creating pod to attach PV to the node")
 	// Create pod to attach Volume to Node
-	pod, err := e2epod.CreatePod(client, namespace, nil, pvclaims, false, ExecCommand)
+	pod, err := e2epod.CreatePod(client, namespace, nil, pvclaims, false, execCommand)
 	framework.ExpectNoError(err)
 
 	// Asserts: Right disk is attached to the pod

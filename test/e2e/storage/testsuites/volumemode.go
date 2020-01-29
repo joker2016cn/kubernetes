@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
@@ -30,13 +29,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	volevents "k8s.io/kubernetes/pkg/controller/volume/events"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eevents "k8s.io/kubernetes/test/e2e/framework/events"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
@@ -145,7 +145,7 @@ func (t *volumeModeTestSuite) DefineTests(driver TestDriver, pattern testpattern
 			if pDriver, ok := driver.(PreprovisionedPVTestDriver); ok {
 				pvSource, volumeNodeAffinity = pDriver.GetPersistentVolumeSource(false, fsType, l.Volume)
 				if pvSource == nil {
-					framework.Skipf("Driver %q does not define PersistentVolumeSource - skipping", dInfo.Name)
+					e2eskipper.Skipf("Driver %q does not define PersistentVolumeSource - skipping", dInfo.Name)
 				}
 
 				storageClass, pvConfig, pvcConfig := generateConfigsForPreprovisionedPVTest(scName, volBindMode, pattern.VolMode, *pvSource, volumeNodeAffinity)
@@ -157,7 +157,7 @@ func (t *volumeModeTestSuite) DefineTests(driver TestDriver, pattern testpattern
 			if dDriver, ok := driver.(DynamicPVTestDriver); ok {
 				l.Sc = dDriver.GetDynamicProvisionStorageClass(l.config, fsType)
 				if l.Sc == nil {
-					framework.Skipf("Driver %q does not define Dynamic Provision StorageClass - skipping", dInfo.Name)
+					e2eskipper.Skipf("Driver %q does not define Dynamic Provision StorageClass - skipping", dInfo.Name)
 				}
 				l.Sc.VolumeBindingMode = &volBindMode
 				testVolumeSizeRange := t.GetTestSuiteInfo().SupportedSizeRange
@@ -229,7 +229,7 @@ func (t *volumeModeTestSuite) DefineTests(driver TestDriver, pattern testpattern
 				}.AsSelector().String()
 				msg := "Unable to attach or mount volumes"
 
-				err = waitTimeoutForEvent(l.cs, l.ns.Name, eventSelector, msg, framework.PodStartTimeout)
+				err = e2eevents.WaitTimeoutForEvent(l.cs, l.ns.Name, eventSelector, msg, framework.PodStartTimeout)
 				// Events are unreliable, don't depend on the event. It's used only to speed up the test.
 				if err != nil {
 					framework.Logf("Warning: did not get event about FailedMountVolume")
@@ -266,7 +266,7 @@ func (t *volumeModeTestSuite) DefineTests(driver TestDriver, pattern testpattern
 				}.AsSelector().String()
 				msg := "does not support block volume provisioning"
 
-				err = waitTimeoutForEvent(l.cs, l.ns.Name, eventSelector, msg, framework.ClaimProvisionTimeout)
+				err = e2eevents.WaitTimeoutForEvent(l.cs, l.ns.Name, eventSelector, msg, framework.ClaimProvisionTimeout)
 				// Events are unreliable, don't depend on the event. It's used only to speed up the test.
 				if err != nil {
 					framework.Logf("Warning: did not get event about provisioing failed")
@@ -317,7 +317,7 @@ func (t *volumeModeTestSuite) DefineTests(driver TestDriver, pattern testpattern
 		} else {
 			msg = "has volumeMode Filesystem, but is specified in volumeDevices"
 		}
-		err = waitTimeoutForEvent(l.cs, l.ns.Name, eventSelector, msg, framework.PodStartTimeout)
+		err = e2eevents.WaitTimeoutForEvent(l.cs, l.ns.Name, eventSelector, msg, framework.PodStartTimeout)
 		// Events are unreliable, don't depend on them. They're used only to speed up the test.
 		if err != nil {
 			framework.Logf("Warning: did not get event about mismatched volume use")
@@ -478,33 +478,4 @@ func listPodDirectory(h utils.HostExec, path string, node *v1.Node) ([]string, e
 		return nil, fmt.Errorf("error checking directory %s on node %s: %s", path, node.Name, err)
 	}
 	return strings.Split(out, "\n"), nil
-}
-
-// NOTE(avalluri): The below code is intentionally copied from e2e/common package.
-// Testsuites depending on common package is not desirable as that pulls quite
-// many tests which are not interested by storage suites.
-//
-// waitTimeoutForEvent waits the given timeout duration for an event to occur.
-func waitTimeoutForEvent(c clientset.Interface, namespace, eventSelector, msg string, timeout time.Duration) error {
-	interval := 2 * time.Second
-	return wait.PollImmediate(interval, timeout, eventOccurred(c, namespace, eventSelector, msg))
-}
-
-// NOTE(avalluri): The below code is intentionally copied from e2e/common package.
-// Testsuites depending on common package is not desirable as that pulls quite
-// many tests which are not interested by storage suites.
-func eventOccurred(c clientset.Interface, namespace, eventSelector, msg string) wait.ConditionFunc {
-	options := metav1.ListOptions{FieldSelector: eventSelector}
-	return func() (bool, error) {
-		events, err := c.CoreV1().Events(namespace).List(options)
-		if err != nil {
-			return false, fmt.Errorf("got error while getting events: %v", err)
-		}
-		for _, event := range events.Items {
-			if strings.Contains(event.Message, msg) {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
 }

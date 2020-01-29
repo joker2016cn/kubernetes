@@ -30,11 +30,10 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	apierrors "k8s.io/apimachinery/pkg/util/errors"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	clientset "k8s.io/client-go/kubernetes"
@@ -44,6 +43,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework/metrics"
 	"k8s.io/kubernetes/test/e2e/framework/podlogs"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 )
@@ -127,7 +127,7 @@ func skipUnsupportedTest(driver TestDriver, pattern testpatterns.TestPattern) {
 			isSupported = false
 		}
 		if !isSupported {
-			framework.Skipf("Driver %s doesn't support snapshot type %v -- skipping", dInfo.Name, pattern.SnapshotType)
+			e2eskipper.Skipf("Driver %s doesn't support snapshot type %v -- skipping", dInfo.Name, pattern.SnapshotType)
 		}
 	} else {
 		// 2. Check if Whether volType is supported by driver from its interface
@@ -145,18 +145,18 @@ func skipUnsupportedTest(driver TestDriver, pattern testpatterns.TestPattern) {
 		}
 
 		if !isSupported {
-			framework.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
+			e2eskipper.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
 		}
 
 		// 3. Check if fsType is supported
 		if !dInfo.SupportedFsType.Has(pattern.FsType) {
-			framework.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.FsType)
+			e2eskipper.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.FsType)
 		}
 		if pattern.FsType == "xfs" && framework.NodeOSDistroIs("gci", "cos", "windows") {
-			framework.Skipf("Distro doesn't support xfs -- skipping")
+			e2eskipper.Skipf("Distro doesn't support xfs -- skipping")
 		}
 		if pattern.FsType == "ntfs" && !framework.NodeOSDistroIs("windows") {
-			framework.Skipf("Distro %s doesn't support ntfs -- skipping", framework.TestContext.NodeOSDistro)
+			e2eskipper.Skipf("Distro %s doesn't support ntfs -- skipping", framework.TestContext.NodeOSDistro)
 		}
 	}
 
@@ -171,7 +171,6 @@ func skipUnsupportedTest(driver TestDriver, pattern testpatterns.TestPattern) {
 type VolumeResource struct {
 	Config    *PerTestConfig
 	Pattern   testpatterns.TestPattern
-	VolType   string
 	VolSource *v1.VolumeSource
 	Pvc       *v1.PersistentVolumeClaim
 	Pv        *v1.PersistentVolume
@@ -199,7 +198,6 @@ func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern test
 		framework.Logf("Creating resource for inline volume")
 		if iDriver, ok := driver.(InlineVolumeTestDriver); ok {
 			r.VolSource = iDriver.GetVolumeSource(false, pattern.FsType, r.Volume)
-			r.VolType = dInfo.Name
 		}
 	case testpatterns.PreprovisionedPV:
 		framework.Logf("Creating resource for pre-provisioned PV")
@@ -209,7 +207,6 @@ func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern test
 				r.Pv, r.Pvc = createPVCPV(f, dInfo.Name, pvSource, volumeNodeAffinity, pattern.VolMode, dInfo.RequiredAccessModes)
 				r.VolSource = createVolumeSource(r.Pvc.Name, false /* readOnly */)
 			}
-			r.VolType = fmt.Sprintf("%s-preprovisionedPV", dInfo.Name)
 		}
 	case testpatterns.DynamicPV:
 		framework.Logf("Creating resource for dynamic PV")
@@ -238,12 +235,10 @@ func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern test
 					f, dInfo.Name, claimSize, r.Sc, pattern.VolMode, dInfo.RequiredAccessModes)
 				r.VolSource = createVolumeSource(r.Pvc.Name, false /* readOnly */)
 			}
-			r.VolType = fmt.Sprintf("%s-dynamicPV", dInfo.Name)
 		}
 	case testpatterns.CSIInlineVolume:
 		framework.Logf("Creating resource for CSI ephemeral inline volume")
 		if eDriver, ok := driver.(EphemeralTestDriver); ok {
-			r.VolType = fmt.Sprintf("%s-ephemeral", dInfo.Name)
 			attributes, _, _ := eDriver.GetVolume(config, 0)
 			r.VolSource = &v1.VolumeSource{
 				CSI: &v1.CSIVolumeSource{
@@ -257,7 +252,7 @@ func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern test
 	}
 
 	if r.VolSource == nil {
-		framework.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
+		e2eskipper.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
 	}
 
 	return &r
@@ -322,7 +317,7 @@ func (r *VolumeResource) CleanupResource() error {
 			cleanUpErrs = append(cleanUpErrs, errors.Wrap(err, "Failed to delete Volume"))
 		}
 	}
-	return apierrors.NewAggregate(cleanUpErrs)
+	return utilerrors.NewAggregate(cleanUpErrs)
 }
 
 func createPVCPV(
@@ -414,7 +409,7 @@ func isDelayedBinding(sc *storagev1.StorageClass) bool {
 // deleteStorageClass deletes the passed in StorageClass and catches errors other than "Not Found"
 func deleteStorageClass(cs clientset.Interface, className string) error {
 	err := cs.StorageV1().StorageClasses().Delete(className, nil)
-	if err != nil && !apierrs.IsNotFound(err) {
+	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
@@ -649,14 +644,6 @@ func getMigrationVolumeOpCounts(cs clientset.Interface, pluginName string) (opCo
 	return opCounts{}, opCounts{}
 }
 
-func getTotOps(ops opCounts) int64 {
-	var tot = int64(0)
-	for _, count := range ops {
-		tot += count
-	}
-	return tot
-}
-
 func validateMigrationVolumeOpCounts(cs clientset.Interface, pluginName string, oldInTreeOps, oldMigratedOps opCounts) {
 	if len(pluginName) == 0 {
 		// This is a native CSI Driver and we don't check ops
@@ -698,7 +685,7 @@ func validateMigrationVolumeOpCounts(cs clientset.Interface, pluginName string, 
 func skipVolTypePatterns(pattern testpatterns.TestPattern, driver TestDriver, skipVolTypes map[testpatterns.TestVolType]bool) {
 	_, supportsProvisioning := driver.(DynamicPVTestDriver)
 	if supportsProvisioning && skipVolTypes[pattern.VolType] {
-		framework.Skipf("Driver supports dynamic provisioning, skipping %s pattern", pattern.VolType)
+		e2eskipper.Skipf("Driver supports dynamic provisioning, skipping %s pattern", pattern.VolType)
 	}
 }
 

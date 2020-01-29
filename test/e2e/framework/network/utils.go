@@ -40,6 +40,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
 
@@ -82,8 +83,8 @@ const (
 var NetexecImageName = imageutils.GetE2EImage(imageutils.Agnhost)
 
 // NewNetworkingTestConfig creates and sets up a new test config helper.
-func NewNetworkingTestConfig(f *framework.Framework) *NetworkingTestConfig {
-	config := &NetworkingTestConfig{f: f, Namespace: f.Namespace.Name, HostNetwork: true}
+func NewNetworkingTestConfig(f *framework.Framework, hostNetwork bool) *NetworkingTestConfig {
+	config := &NetworkingTestConfig{f: f, Namespace: f.Namespace.Name, HostNetwork: hostNetwork}
 	ginkgo.By(fmt.Sprintf("Performing setup for networking test in namespace %v", config.Namespace))
 	config.setup(getServiceSelector())
 	return config
@@ -129,7 +130,7 @@ type NetworkingTestConfig struct {
 	// spanning over all endpointPods.
 	SessionAffinityService *v1.Service
 	// ExternalAddrs is a list of external IPs of nodes in the cluster.
-	ExternalAddrs []string
+	ExternalAddr string
 	// Nodes is a list of nodes in the cluster.
 	Nodes []v1.Node
 	// MaxTries is the number of retries tolerated for tests run against
@@ -232,7 +233,7 @@ func (config *NetworkingTestConfig) DialFromContainer(protocol, dialCommand, con
 	responses := sets.NewString()
 
 	for i := 0; i < maxTries; i++ {
-		stdout, stderr, err := config.f.ExecShellInPodWithFullOutput(config.HostTestContainerPod.Name, cmd)
+		stdout, stderr, err := config.f.ExecShellInPodWithFullOutput(config.TestContainerPod.Name, cmd)
 		if err != nil {
 			// A failure to kubectl exec counts as a try, not a hard fail.
 			// Also note that we will keep failing for maxTries in tests where
@@ -293,7 +294,7 @@ func (config *NetworkingTestConfig) GetEndpointsFromContainer(protocol, containe
 	eps := sets.NewString()
 
 	for i := 0; i < tries; i++ {
-		stdout, stderr, err := config.f.ExecShellInPodWithFullOutput(config.HostTestContainerPod.Name, cmd)
+		stdout, stderr, err := config.f.ExecShellInPodWithFullOutput(config.TestContainerPod.Name, cmd)
 		if err != nil {
 			// A failure to kubectl exec counts as a try, not a hard fail.
 			// Also note that we will keep failing for maxTries in tests where
@@ -561,10 +562,11 @@ func (config *NetworkingTestConfig) createTestPods() {
 	hostTestContainerPod := e2epod.NewExecPodSpec(config.Namespace, hostTestPodName, config.HostNetwork)
 
 	config.createPod(testContainerPod)
-	config.createPod(hostTestContainerPod)
+	if config.HostNetwork {
+		config.createPod(hostTestContainerPod)
+	}
 
 	framework.ExpectNoError(config.f.WaitForPodRunning(testContainerPod.Name))
-	framework.ExpectNoError(config.f.WaitForPodRunning(hostTestContainerPod.Name))
 
 	var err error
 	config.TestContainerPod, err = config.getPodClient().Get(testContainerPod.Name, metav1.GetOptions{})
@@ -572,9 +574,12 @@ func (config *NetworkingTestConfig) createTestPods() {
 		framework.Failf("Failed to retrieve %s pod: %v", testContainerPod.Name, err)
 	}
 
-	config.HostTestContainerPod, err = config.getPodClient().Get(hostTestContainerPod.Name, metav1.GetOptions{})
-	if err != nil {
-		framework.Failf("Failed to retrieve %s pod: %v", hostTestContainerPod.Name, err)
+	if config.HostNetwork {
+		framework.ExpectNoError(config.f.WaitForPodRunning(hostTestContainerPod.Name))
+		config.HostTestContainerPod, err = config.getPodClient().Get(hostTestContainerPod.Name, metav1.GetOptions{})
+		if err != nil {
+			framework.Failf("Failed to retrieve %s pod: %v", hostTestContainerPod.Name, err)
+		}
 	}
 }
 
@@ -613,9 +618,9 @@ func (config *NetworkingTestConfig) setup(selector map[string]string) {
 	framework.ExpectNoError(framework.WaitForAllNodesSchedulable(config.f.ClientSet, 10*time.Minute))
 	nodeList, err := e2enode.GetReadySchedulableNodes(config.f.ClientSet)
 	framework.ExpectNoError(err)
-	config.ExternalAddrs = e2enode.FirstAddress(nodeList, v1.NodeExternalIP)
+	config.ExternalAddr = e2enode.FirstAddress(nodeList, v1.NodeExternalIP)
 
-	framework.SkipUnlessNodeCountIsAtLeast(2)
+	e2eskipper.SkipUnlessNodeCountIsAtLeast(2)
 	config.Nodes = nodeList.Items
 
 	ginkgo.By("Creating the service on top of the pods in kubernetes")
@@ -633,11 +638,10 @@ func (config *NetworkingTestConfig) setup(selector map[string]string) {
 		}
 	}
 	config.ClusterIP = config.NodePortService.Spec.ClusterIP
-	if len(config.ExternalAddrs) != 0 {
-		config.NodeIP = config.ExternalAddrs[0]
+	if config.ExternalAddr != "" {
+		config.NodeIP = config.ExternalAddr
 	} else {
-		internalAddrs := e2enode.FirstAddress(nodeList, v1.NodeInternalIP)
-		config.NodeIP = internalAddrs[0]
+		config.NodeIP = e2enode.FirstAddress(nodeList, v1.NodeInternalIP)
 	}
 }
 

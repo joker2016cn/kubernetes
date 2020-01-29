@@ -19,7 +19,7 @@ dependencies:
     - path: cmd/kubeadm/app/constants/constants.go
     - path: hack/lib/etcd.sh
       match: ETCD_VERSION=
-    - path: staging/src/k8s.io/sample-apiserver/artifacts/example/rc.yaml
+    - path: staging/src/k8s.io/sample-apiserver/artifacts/example/deployment.yaml
       match: quay.io/coreos/etcd
     - path: test/e2e/framework/nodes_util.go
       match: const etcdImage
@@ -32,7 +32,7 @@ dependencies:
 
 
   - name: "golang"
-    version: 1.13.4
+    version: 1.13.6
     refPaths:
     - path: build/build-image/cross/Dockerfile
       match: "golang:"
@@ -77,7 +77,7 @@ dependencies:
       match: CoreDNSVersion =
 
   - name: "crictl"
-    version: 1.16.1
+    version: 1.17.0
     refPaths:
     - path: build/workspace.bzl
       match: CRI_TOOLS_VERSION =

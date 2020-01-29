@@ -45,7 +45,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,10 +70,11 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/framework/auth"
 	e2eendpoints "k8s.io/kubernetes/test/e2e/framework/endpoints"
-	jobutil "k8s.io/kubernetes/test/e2e/framework/job"
+	e2ejob "k8s.io/kubernetes/test/e2e/framework/job"
 	e2ekubectl "k8s.io/kubernetes/test/e2e/framework/kubectl"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/testfiles"
 	"k8s.io/kubernetes/test/e2e/scheduling"
 	"k8s.io/kubernetes/test/integration/etcd"
@@ -234,7 +235,7 @@ var _ = SIGDescribe("Kubectl alpha client", func() {
 		})
 
 		ginkgo.It("should create a CronJob", func() {
-			framework.SkipIfMissingResource(f.DynamicClient, cronJobGroupVersionResourceAlpha, f.Namespace.Name)
+			e2eskipper.SkipIfMissingResource(f.DynamicClient, cronJobGroupVersionResourceAlpha, f.Namespace.Name)
 
 			schedule := "*/5 * * * ?"
 			framework.RunKubectlOrDie(ns, "run", cjName, "--restart=OnFailure", "--generator=cronjob/v2alpha1",
@@ -460,7 +461,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 						// tolerate discovery errors for non-k8s.io groups (like aggregated/crd groups)
 						continue
 					}
-					if gv.Group == "wardle.k8s.io" || gv.Group == "metrics.k8s.io" {
+					if gv.Group == "metrics.k8s.io" {
 						// tolerate discovery errors for known test k8s.io groups like aggregated/metrics groups
 						continue
 					}
@@ -527,7 +528,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 			ginkgo.By(fmt.Sprintf("creating the pod from %v", podYaml))
 			podYaml = commonutils.SubstituteImageName(string(readTestFileOrDie("pod-with-readiness-probe.yaml.in")))
 			framework.RunKubectlOrDieInput(ns, podYaml, "create", "-f", "-", fmt.Sprintf("--namespace=%v", ns))
-			gomega.Expect(e2epod.CheckPodsRunningReady(c, ns, []string{simplePodName}, framework.PodStartTimeout)).To(gomega.BeTrue())
+			framework.ExpectEqual(e2epod.CheckPodsRunningReady(c, ns, []string{simplePodName}, framework.PodStartTimeout), true)
 		})
 		ginkgo.AfterEach(func() {
 			cleanupKubectlInputs(podYaml, ns, simplePodSelector)
@@ -1325,9 +1326,9 @@ metadata:
 						framework.Logf("Get endpoints failed (interval %v): %v", framework.Poll, err)
 
 						// if the error is API not found or could not find default credentials or TLS handshake timeout, try again
-						if apierrs.IsNotFound(err) ||
-							apierrs.IsUnauthorized(err) ||
-							apierrs.IsServerTimeout(err) {
+						if apierrors.IsNotFound(err) ||
+							apierrors.IsUnauthorized(err) ||
+							apierrors.IsServerTimeout(err) {
 							err = nil
 						}
 						return false, err
@@ -1385,7 +1386,7 @@ metadata:
 			podYaml = commonutils.SubstituteImageName(string(readTestFileOrDie("pause-pod.yaml.in")))
 			nsFlag = fmt.Sprintf("--namespace=%v", ns)
 			framework.RunKubectlOrDieInput(ns, podYaml, "create", "-f", "-", nsFlag)
-			gomega.Expect(e2epod.CheckPodsRunningReady(c, ns, []string{pausePodName}, framework.PodStartTimeout)).To(gomega.BeTrue())
+			framework.ExpectEqual(e2epod.CheckPodsRunningReady(c, ns, []string{pausePodName}, framework.PodStartTimeout), true)
 		})
 		ginkgo.AfterEach(func() {
 			cleanupKubectlInputs(podYaml, ns, pausePodSelector)
@@ -1426,7 +1427,7 @@ metadata:
 			nsFlag = fmt.Sprintf("--namespace=%v", ns)
 			podYaml = commonutils.SubstituteImageName(string(readTestFileOrDie("busybox-pod.yaml")))
 			framework.RunKubectlOrDieInput(ns, podYaml, "create", "-f", "-", nsFlag)
-			gomega.Expect(e2epod.CheckPodsRunningReady(c, ns, []string{busyboxPodName}, framework.PodStartTimeout)).To(gomega.BeTrue())
+			framework.ExpectEqual(e2epod.CheckPodsRunningReady(c, ns, []string{busyboxPodName}, framework.PodStartTimeout), true)
 		})
 		ginkgo.AfterEach(func() {
 			cleanupKubectlInputs(podYaml, ns, busyboxPodSelector)
@@ -1832,7 +1833,7 @@ metadata:
 		})
 
 		ginkgo.It("should create a CronJob", func() {
-			framework.SkipIfMissingResource(f.DynamicClient, cronJobGroupVersionResourceBeta, f.Namespace.Name)
+			e2eskipper.SkipIfMissingResource(f.DynamicClient, cronJobGroupVersionResourceBeta, f.Namespace.Name)
 
 			schedule := "*/5 * * * ?"
 			framework.RunKubectlOrDie(ns, "run", cjName, "--restart=OnFailure", "--generator=cronjob/v1beta1",
@@ -1963,13 +1964,13 @@ metadata:
 			gomega.Expect(runOutput).To(gomega.ContainSubstring("abcd1234"))
 			gomega.Expect(runOutput).To(gomega.ContainSubstring("stdin closed"))
 
-			err := jobutil.WaitForJobGone(c, ns, jobName, wait.ForeverTestTimeout)
+			err := e2ejob.WaitForJobGone(c, ns, jobName, wait.ForeverTestTimeout)
 			framework.ExpectNoError(err)
 
 			ginkgo.By("verifying the job " + jobName + " was deleted")
 			_, err = c.BatchV1().Jobs(ns).Get(jobName, metav1.GetOptions{})
 			framework.ExpectError(err)
-			gomega.Expect(apierrs.IsNotFound(err)).To(gomega.BeTrue())
+			framework.ExpectEqual(apierrors.IsNotFound(err), true)
 		})
 	})
 
@@ -2660,7 +2661,7 @@ func waitForRCToStabilize(c clientset.Interface, ns, name string, timeout time.D
 	_, err = watchtools.UntilWithoutRetry(ctx, w, func(event watch.Event) (bool, error) {
 		switch event.Type {
 		case watch.Deleted:
-			return false, apierrs.NewNotFound(schema.GroupResource{Resource: "replicationcontrollers"}, "")
+			return false, apierrors.NewNotFound(schema.GroupResource{Resource: "replicationcontrollers"}, "")
 		}
 		switch rc := event.Object.(type) {
 		case *v1.ReplicationController:
